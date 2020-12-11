@@ -59,6 +59,7 @@ typedef struct {
     usbcdc_inep_t         inep; /* start at 1 (descriptor id start at 1) */
     usbctrl_interface_t   iface;
     uint8_t              *in_buff;
+    uint16_t              in_buff_len;
     bool                  configured;
     bool                  declared;
 } usbcdc_iface_t;
@@ -70,11 +71,10 @@ typedef struct {
  */
 typedef struct {
     uint8_t               num_iface; /* number of reports */
-    usbcdc_iface_t        hid_ifaces[MAX_USBCDC_IFACES];
+    usbcdc_iface_t        cdc_ifaces[MAX_USBCDC_IFACES];
 } usbcdc_context_t;
 
 
-#endif
 
 usbcdc_context_t *usbcdc_get_context(void);
 

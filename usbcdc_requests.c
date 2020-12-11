@@ -22,13 +22,11 @@
  *
  */
 #include "libusbctrl.h"
-#include "api/libusbhid.h"
+#include "api/libusbcdc.h"
 #include "libusbctrl.h"
 #include "libc/types.h"
 #include "libc/stdio.h"
-#include "usbhid.h"
-#include "usbhid_descriptor.h"
-#include "usbhid_reports.h"
+#include "usbcdc.h"
 #include "autoconf.h"
 
 /* USBHID class specific request (i.e. bRequestType is Type (bit 5..6 = 1, bits 0..4 target current iface
@@ -46,15 +44,12 @@
 #define USB_CDC_RQST_SET_CTRL_LINE_STATE    0x22
 #define USB_CDC_RQST_SEND_BREAK             0x23
 
-static mbed_error_t usbhid_handle_std_request(usbctrl_setup_pkt_t *pkt)
+static mbed_error_t usbcdc_handle_std_request(usbctrl_setup_pkt_t *pkt)
 {
     mbed_error_t errcode = MBED_ERROR_NONE;
     /* get the high byte */
-    uint8_t maxlen = pkt->wLength & 0xff;
     uint8_t action = pkt->bRequest;
-    uint8_t descriptor_type = pkt->wValue >> 0x8;
-    uint8_t descriptor_index = pkt->wValue & 0xff;
-    usbcdc_context_t *ctx = usbhid_get_context();
+    usbcdc_context_t *ctx = usbcdc_get_context();
     if (ctx == NULL) {
         errcode = MBED_ERROR_INVSTATE;
         goto err;
@@ -68,21 +63,20 @@ err:
     return errcode;
 }
 
-static mbed_error_t usbhid_handle_class_request(usbctrl_setup_pkt_t *pkt)
+static mbed_error_t usbcdc_handle_class_request(usbctrl_setup_pkt_t *pkt)
 {
     mbed_error_t errcode = MBED_ERROR_NONE;
-    usbhid_context_t *ctx = usbcdc_get_context();
+    usbcdc_context_t *ctx = usbcdc_get_context();
     if (ctx == NULL) {
         errcode = MBED_ERROR_INVSTATE;
         goto err;
     }
-    uint8_t iface = pkt->wIndex & 0xff;
 
     uint8_t action = pkt->bRequest;
     switch (action) {
         case USB_CDC_RQST_SEND_ECAPSULATED_CMD:
             break;
-        case USB_CDC_RQST_GET_ENCAPSULATED_CMD:
+        case USB_CDC_RQST_GET_ECAPSULATED_RESP:
             break;
         default:
             log_printf("[USBHID] Ubsupported class request action %x", action);

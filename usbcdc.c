@@ -23,21 +23,18 @@
  */
 
 
-#include "api/libusbhid.h"
+#include "api/libusbcdc.h"
 #include "libc/string.h"
 #include "libc/sync.h"
-#include "libusbctrl.h"
-#include "usbhid.h"
-#include "usbhid_requests.h"
-#include "usbhid_reports.h"
-#include "usbhid_descriptor.h"
-#include "usbhid_default_handlers.h"
 #include "libc/sanhandlers.h"
+#include "libusbctrl.h"
+#include "usbcdc.h"
+#include "usbcdc_requests.h"
 
 
 static bool data_being_sent = false;
 
-static cdc_context_t usbcdc_ctx = { 0 };
+static usbcdc_context_t usbcdc_ctx = { 0 };
 
 
 static inline uint8_t get_in_epid(usbctrl_interface_t const * const iface)
@@ -62,7 +59,7 @@ static inline uint8_t get_in_epid(usbctrl_interface_t const * const iface)
       */
     for (i = 0; i < iface_ep_num; ++i) {
         if (iface->eps[i].dir == USB_EP_DIR_IN || iface->eps[i].dir == USB_EP_DIR_BOTH) {
-            log_printf("[USBHID] IN EP is %d\n", iface->eps[i].ep_num);
+            log_printf("[USBCDC] IN EP is %d\n", iface->eps[i].ep_num);
             epin = iface->eps[i].ep_num;
             goto err;
         }
@@ -81,7 +78,7 @@ static mbed_error_t usbcdc_received(uint32_t dev_id __attribute__((unused)), uin
 
     for (iface = 0; iface < usbcdc_ctx.num_iface; ++iface)
     {
-        if (usbcdc_ctx.hid_ifaces[iface].iface.usb_ep_number >= MAX_EP_PER_INTERFACE) {
+        if (usbcdc_ctx.cdc_ifaces[iface].iface.usb_ep_number >= MAX_EP_PER_INTERFACE) {
             errcode = MBED_ERROR_INVPARAM;
             goto err;
         }
@@ -116,9 +113,9 @@ mbed_error_t usbcdc_data_sent(uint32_t dev_id __attribute__((unused)), uint32_t 
   @ assigns \nothing ;
   @ ensures \result == &usbcdc_ctx;
   */
-usbhid_context_t *usbcdc_get_context(void)
+usbcdc_context_t *usbcdc_get_context(void)
 {
-    return (usbhid_context_t*)&usbhid_ctx;
+    return (usbcdc_context_t*)&usbcdc_ctx;
 }
 
 bool usbcdc_interface_exists(uint8_t cdc_handler)
@@ -173,8 +170,8 @@ static mbed_error_t usbcdc_ep_trigger(uint32_t dev_id, uint32_t size, uint8_t ep
 
 
 mbed_error_t usbcdc_declare(uint32_t usbxdci_handler,
-                            usbcdc_subclass_t cdc_subclass,
-                            usbcdc_protocol_t cdc_protocol,
+                            uint8_t           cdc_subclass,
+                            uint8_t           cdc_protocol,
                             uint16_t          ep_mpsize,
                             uint8_t          *cdc_handler,
                             uint8_t          *in_buff,
@@ -183,22 +180,22 @@ mbed_error_t usbcdc_declare(uint32_t usbxdci_handler,
     mbed_error_t errcode = MBED_ERROR_NONE;
     /* sanitize */
     if (cdc_handler == NULL) {
-        log_printf("[USBHID] error ! hid_handler is null!\n");
+        log_printf("[USBCDC] error ! hid_handler is null!\n");
         errcode = MBED_ERROR_INVPARAM;
         goto err;
     }
     if (usbcdc_ctx.num_iface >= MAX_USBCDC_IFACES) {
-        log_printf("[USBHID] error ! no more iface storage !\n");
+        log_printf("[USBCDC] error ! no more iface storage !\n");
         errcode = MBED_ERROR_NOSTORAGE;
         goto err;
     }
     if (in_buff == NULL) {
-        log_printf("[USBHID] error ! buffer given is null !\n");
+        log_printf("[USBCDC] error ! buffer given is null !\n");
         errcode = MBED_ERROR_NOSTORAGE;
         goto err;
     }
     if (in_buff_len == 0) {
-        log_printf("[USBHID] error ! buffer given is null-sized !\n");
+        log_printf("[USBCDC] error ! buffer given is null-sized !\n");
         errcode = MBED_ERROR_NOSTORAGE;
         goto err;
     }
@@ -208,54 +205,47 @@ mbed_error_t usbcdc_declare(uint32_t usbxdci_handler,
     memset((void*)&usbcdc_ctx.cdc_ifaces[i], 0x0, sizeof(usbctrl_interface_t));
 
     ADD_LOC_HANDLER(usbcdc_class_rqst_handler);
-    ADD_LOC_HANDLER(usbcdc_get_descriptor);
     ADD_LOC_HANDLER(usbcdc_data_sent);
     ADD_LOC_HANDLER(usbcdc_received);
 
-    usbcdc_ctx.cdc_ifaces[i].iface.usb_class = USB_CLASS_CDC;
+    usbcdc_ctx.cdc_ifaces[i].iface.usb_class = USB_CLASS_CDC_CTRL;
     usbcdc_ctx.cdc_ifaces[i].iface.usb_subclass = cdc_subclass; /* SCSI transparent cmd set (i.e. use INQUIRY) */
     usbcdc_ctx.cdc_ifaces[i].iface.usb_protocol = cdc_protocol; /* Protocol BBB (Bulk only) */
     usbcdc_ctx.cdc_ifaces[i].iface.dedicated = false;
-    usbcdc_ctx.cdc_ifaces[i].iface.rqst_handler = usbcdc_class_rqst_handler;
-    usbcdc_ctx.cdc_ifaces[i].iface.class_desc_handler = usbcdc_get_descriptor;
 
     uint8_t curr_ep = 0;
 
-        /*
-         * IN EP for low latency data transmission with the host
-         */
-        usbcdc_ctx.cdc_ifaces[i].iface.eps[curr_ep].type        = USB_EP_TYPE_BULK;
-        usbcdc_ctx.cdc_ifaces[i].iface.eps[curr_ep].dir         = USB_EP_DIR_IN;
-        usbcdc_ctx.cdc_ifaces[i].iface.eps[curr_ep].attr        = USB_EP_ATTR_NO_SYNC;
-        usbcdc_ctx.cdc_ifaces[i].iface.eps[curr_ep].usage       = USB_EP_USAGE_DATA;
-        usbcdc_ctx.cdc_ifaces[i].iface.eps[curr_ep].pkt_maxsize = ep_mpsize; /* mpsize on EP1 */
-        usbcdc_ctx.cdc_ifaces[i].iface.eps[curr_ep].ep_num      = 1; /* this may be updated by libctrl */
-        usbcdc_ctx.cdc_ifaces[i].iface.eps[curr_ep].handler     = usbcdc_data_sent;
-        usbcdc_ctx.cdc_ifaces[i].iface.eps[curr_ep].poll_interval = 0:
+    /*
+     * IN EP for low latency ctrl transmission with the host
+     */
+    usbcdc_ctx.cdc_ifaces[i].iface.eps[curr_ep].type        = USB_EP_TYPE_BULK;
+    usbcdc_ctx.cdc_ifaces[i].iface.eps[curr_ep].dir         = USB_EP_DIR_IN;
+    usbcdc_ctx.cdc_ifaces[i].iface.eps[curr_ep].attr        = USB_EP_ATTR_NO_SYNC;
+    usbcdc_ctx.cdc_ifaces[i].iface.eps[curr_ep].usage       = USB_EP_USAGE_DATA;
+    usbcdc_ctx.cdc_ifaces[i].iface.eps[curr_ep].pkt_maxsize = ep_mpsize; /* mpsize on EP1 */
+    usbcdc_ctx.cdc_ifaces[i].iface.eps[curr_ep].ep_num      = 1; /* this may be updated by libctrl */
+    usbcdc_ctx.cdc_ifaces[i].iface.eps[curr_ep].handler     = usbcdc_data_sent;
+    usbcdc_ctx.cdc_ifaces[i].iface.eps[curr_ep].poll_interval = 0;
         curr_ep++;
 
-        /*
-         * IN & OUT dedicated EP for low latency data transmission with the host
-         */
-        usbcdc_ctx.cdc_ifaces[i].iface.eps[curr_ep].type        = USB_EP_TYPE_BULK;
-        usbcdc_ctx.cdc_ifaces[i].iface.eps[curr_ep].dir         = USB_EP_DIR_OUT;
-        usbcdc_ctx.cdc_ifaces[i].iface.eps[curr_ep].attr        = USB_EP_ATTR_NO_SYNC;
-        usbcdc_ctx.cdc_ifaces[i].iface.eps[curr_ep].usage       = USB_EP_USAGE_DATA;
-        usbcdc_ctx.cdc_ifaces[i].iface.eps[curr_ep].pkt_maxsize = ep_mpsize; /* mpsize on EP1 */
-        usbcdc_ctx.cdc_ifaces[i].iface.eps[curr_ep].ep_num      = 1; /* this may be updated by libctrl */
-        usbcdc_ctx.cdc_ifaces[i].iface.eps[curr_ep].handler     = usbcdc_received;
-        usbcdc_ctx.cdc_ifaces[i].iface.eps[curr_ep].poll_interval = 0;
-        curr_ep++;
+    /*
+     * IN & OUT dedicated EP for low latency data transmission with the host
+     */
+    usbcdc_ctx.cdc_ifaces[i].iface.eps[curr_ep].type        = USB_EP_TYPE_BULK;
+    usbcdc_ctx.cdc_ifaces[i].iface.eps[curr_ep].dir         = USB_EP_DIR_OUT;
+    usbcdc_ctx.cdc_ifaces[i].iface.eps[curr_ep].attr        = USB_EP_ATTR_NO_SYNC;
+    usbcdc_ctx.cdc_ifaces[i].iface.eps[curr_ep].usage       = USB_EP_USAGE_DATA;
+    usbcdc_ctx.cdc_ifaces[i].iface.eps[curr_ep].pkt_maxsize = ep_mpsize; /* mpsize on EP1 */
+    usbcdc_ctx.cdc_ifaces[i].iface.eps[curr_ep].ep_num      = 1; /* this may be updated by libctrl */
+    usbcdc_ctx.cdc_ifaces[i].iface.eps[curr_ep].handler     = usbcdc_received;
+    usbcdc_ctx.cdc_ifaces[i].iface.eps[curr_ep].poll_interval = 0;
+    curr_ep++;
 
-    }
-
-    /* @ assert curr_ep <= 2 ; */
     usbcdc_ctx.cdc_ifaces[i].iface.usb_ep_number = curr_ep;
-
 
     errcode = usbctrl_declare_interface(usbxdci_handler, (usbctrl_interface_t*)&(usbcdc_ctx.cdc_ifaces[i].iface));
     if (errcode != MBED_ERROR_NONE) {
-        log_printf("[USBHID] Error while declaring interface: err=%d !\n", errcode);
+        log_printf("[USBCDC] Error while declaring interface: err=%d !\n", errcode);
         goto err;
     }
 
@@ -264,7 +254,68 @@ mbed_error_t usbcdc_declare(uint32_t usbxdci_handler,
     usbcdc_ctx.cdc_ifaces[i].inep.id = epid;
 
     /* set current interface effective identifier */
-    usbcdc_ctx.cdc_ifaces[i].id   = usbcdc_ctx.hid_ifaces[i].iface.id;
+    usbcdc_ctx.cdc_ifaces[i].id   = usbcdc_ctx.cdc_ifaces[i].iface.id;
+    usbcdc_ctx.cdc_ifaces[i].in_buff = in_buff;
+    usbcdc_ctx.cdc_ifaces[i].in_buff_len = in_buff_len;
+
+    /* the configuration step not yet passed */
+    usbcdc_ctx.cdc_ifaces[i].configured = false;
+    usbcdc_ctx.cdc_ifaces[i].declared = true;
+
+
+    i++;
+    usbcdc_ctx.num_iface++;
+    curr_ep = 0;
+
+    usbcdc_ctx.cdc_ifaces[i].iface.usb_class = USB_CLASS_CDC_DATA;
+    usbcdc_ctx.cdc_ifaces[i].iface.usb_subclass = cdc_subclass; /* SCSI transparent cmd set (i.e. use INQUIRY) */
+    usbcdc_ctx.cdc_ifaces[i].iface.usb_protocol = cdc_protocol; /* Protocol BBB (Bulk only) */
+    usbcdc_ctx.cdc_ifaces[i].iface.dedicated = false;
+
+
+    /*
+     * IN EP for low latency ctrl transmission with the host
+     */
+    usbcdc_ctx.cdc_ifaces[i].iface.eps[curr_ep].type        = USB_EP_TYPE_BULK;
+    usbcdc_ctx.cdc_ifaces[i].iface.eps[curr_ep].dir         = USB_EP_DIR_IN;
+    usbcdc_ctx.cdc_ifaces[i].iface.eps[curr_ep].attr        = USB_EP_ATTR_NO_SYNC;
+    usbcdc_ctx.cdc_ifaces[i].iface.eps[curr_ep].usage       = USB_EP_USAGE_DATA;
+    usbcdc_ctx.cdc_ifaces[i].iface.eps[curr_ep].pkt_maxsize = ep_mpsize; /* mpsize on EP1 */
+    usbcdc_ctx.cdc_ifaces[i].iface.eps[curr_ep].ep_num      = 1; /* this may be updated by libctrl */
+    usbcdc_ctx.cdc_ifaces[i].iface.eps[curr_ep].handler     = usbcdc_data_sent;
+        curr_ep++;
+
+    /*
+     * IN & OUT dedicated EP for low latency data transmission with the host
+     */
+    usbcdc_ctx.cdc_ifaces[i].iface.eps[curr_ep].type        = USB_EP_TYPE_BULK;
+    usbcdc_ctx.cdc_ifaces[i].iface.eps[curr_ep].dir         = USB_EP_DIR_OUT;
+    usbcdc_ctx.cdc_ifaces[i].iface.eps[curr_ep].attr        = USB_EP_ATTR_NO_SYNC;
+    usbcdc_ctx.cdc_ifaces[i].iface.eps[curr_ep].usage       = USB_EP_USAGE_DATA;
+    usbcdc_ctx.cdc_ifaces[i].iface.eps[curr_ep].pkt_maxsize = ep_mpsize; /* mpsize on EP1 */
+    usbcdc_ctx.cdc_ifaces[i].iface.eps[curr_ep].ep_num      = 1; /* this may be updated by libctrl */
+    usbcdc_ctx.cdc_ifaces[i].iface.eps[curr_ep].handler     = usbcdc_received;
+    usbcdc_ctx.cdc_ifaces[i].iface.eps[curr_ep].poll_interval = 0;
+    curr_ep++;
+
+
+
+    /* @ assert curr_ep <= 2 ; */
+    usbcdc_ctx.cdc_ifaces[i].iface.usb_ep_number = curr_ep;
+
+
+    errcode = usbctrl_declare_interface(usbxdci_handler, (usbctrl_interface_t*)&(usbcdc_ctx.cdc_ifaces[i].iface));
+    if (errcode != MBED_ERROR_NONE) {
+        log_printf("[USBCDC] Error while declaring interface: err=%d !\n", errcode);
+        goto err;
+    }
+
+    /* set IN EP real identifier */
+    epid = get_in_epid(&usbcdc_ctx.cdc_ifaces[i].iface);
+    usbcdc_ctx.cdc_ifaces[i].inep.id = epid;
+
+    /* set current interface effective identifier */
+    usbcdc_ctx.cdc_ifaces[i].id   = usbcdc_ctx.cdc_ifaces[i].iface.id;
     usbcdc_ctx.cdc_ifaces[i].in_buff = in_buff;
     usbcdc_ctx.cdc_ifaces[i].in_buff_len = in_buff_len;
 
@@ -281,24 +332,22 @@ err:
 }
 
 mbed_error_t usbcdc_configure(uint8_t               cdc_handler,
-                              usbcdc_received_t     cdc_receive_frame,
-                              usbcdc_send_t         cdc_send_frame)
+                              usb_cdc_data_received_t     cdc_receive_frame)
 {
     mbed_error_t errcode = MBED_ERROR_NONE;
-    usbcdc_context_t *ctx = usbhid_get_context();
+    usbcdc_context_t *ctx = usbcdc_get_context();
     /* sanitize */
     if (!usbcdc_interface_exists(cdc_handler)) {
         errcode = MBED_ERROR_INVPARAM;
         goto err;
     }
-    if (cdc_receive_frame == NULL || cdc_send_frame == NULL) {
+    if (cdc_receive_frame == NULL) {
         errcode = MBED_ERROR_INVPARAM;
         goto err;
     }
     /*@ assert errcode==MBED_ERROR_NONE; */
     /* set each of the interface callbacks */
-    ctx->cdc_ifaces[cdc_handler].receive_frame_cb = cdc_receive_frame;
-    ctx->cdc_ifaces[cdc_handler].send_frame_cb = cdc_send_frame;
+    //ctx->cdc_ifaces[cdc_handler].receive_frame_cb = cdc_receive_frame;
     /* set interface as configured */
     ctx->cdc_ifaces[cdc_handler].configured = true;
 
@@ -307,14 +356,14 @@ err:
 }
 
 #if 0
-mbed_error_t usbhid_response_done(uint8_t hid_handler)
+mbed_error_t usbcdc_response_done(uint8_t hid_handler)
 {
     mbed_error_t errcode = MBED_ERROR_NONE;
-    if (!usbhid_interface_exists(hid_handler)) {
+    if (!usbcdc_interface_exists(hid_handler)) {
         errcode = MBED_ERROR_INVPARAM;
         goto err;
     }
-    uint8_t epid = get_in_epid(&usbhid_ctx.hid_ifaces[hid_handler].iface);
+    uint8_t epid = get_in_epid(&usbcdc_ctx.hid_ifaces[hid_handler].iface);
     usb_backend_drv_send_zlp(epid);
 err:
     return errcode;
@@ -345,7 +394,7 @@ mbed_error_t usbcdc_send_data(uint8_t              cdc_handler,
 
     set_bool_with_membarrier(&data_being_sent, true);
     /* total size is report + report id (one byte) */
-    uint8_t epid = get_in_epid(&usbcdc_ctx.cdc_ifaces[hid_handler].iface);
+    uint8_t epid = get_in_epid(&usbcdc_ctx.cdc_ifaces[cdc_handler].iface);
     log_printf("[USBCDC] sending response on EP %d (len %d)\n", epid, response_len);
 
     errcode = usb_backend_drv_send_data(response, response_len, epid);

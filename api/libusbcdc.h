@@ -69,7 +69,7 @@
  * for security reason.
  */
 
-typedef (*usb_cdc_data_received_t)(uint8_t hid_handler, uint8_t *data, uint16_t len);
+typedef mbed_error_t (*usb_cdc_data_received_t)(uint8_t hid_handler, uint8_t *data, uint16_t len);
 /*
  * INFO:
  *
@@ -86,8 +86,8 @@ typedef (*usb_cdc_data_received_t)(uint8_t hid_handler, uint8_t *data, uint16_t 
 
 
 mbed_error_t usbcdc_declare(uint32_t usbxdci_handler,
-                            usbcdc_subclass_t cdc_subclass,
-                            usbcdc_protocol_t cdc_protocol,
+                            uint8_t           cdc_subclass,
+                            uint8_t           cdc_protocol,
                             uint16_t          ep_mpsize,
                             uint8_t          *cdc_handler,
                             uint8_t          *in_buff,
@@ -95,8 +95,7 @@ mbed_error_t usbcdc_declare(uint32_t usbxdci_handler,
 
 
 mbed_error_t usbcdc_configure(uint8_t               cdc_handler,
-                              usbcdc_received_t     cdc_receive_frame,
-                              usbcdc_send_t         cdc_send_frame);
+                              usb_cdc_data_received_t     cdc_receive_frame);
 
 
 mbed_error_t usbcdc_send_data(uint8_t              cdc_handler,
