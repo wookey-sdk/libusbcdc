@@ -37,7 +37,8 @@
 # define log_printf(...)
 #endif
 
-#define MAX_USBCDC_IFACES    4
+/* 2 interfaces per fonction (composite device) */
+#define MAX_USBCDC_FUNCTIONS 2
 
 typedef struct {
     uint8_t  id;      /* IN EP identifier */
@@ -55,13 +56,13 @@ typedef struct {
  *   configured.
  */
 typedef struct {
-    uint8_t id;
-    usbcdc_inep_t         inep; /* start at 1 (descriptor id start at 1) */
+    usb_cdc_receive_t     receive;
     usbctrl_interface_t   iface;
-    uint8_t              *in_buff;
-    uint16_t              in_buff_len;
+    uint8_t              *buf;
+    uint16_t              buf_len;
     bool                  configured;
     bool                  declared;
+    uint8_t id;
 } usbcdc_iface_t;
 
 
@@ -70,8 +71,10 @@ typedef struct {
  * These interfaces are declared successively.
  */
 typedef struct {
+    uint8_t               rqstbuf[64];
+    uint8_t               rqstbuflen;
     uint8_t               num_iface; /* number of reports */
-    usbcdc_iface_t        cdc_ifaces[MAX_USBCDC_IFACES];
+    usbcdc_iface_t        cdc_ifaces[2*MAX_USBCDC_FUNCTIONS];
 } usbcdc_context_t;
 
 
@@ -79,5 +82,7 @@ typedef struct {
 usbcdc_context_t *usbcdc_get_context(void);
 
 bool usbcdc_interface_exists(uint8_t cdc_handler);
+
+mbed_error_t usbcdc_ctrl_send(uint32_t dev_id __attribute__((unused)), uint32_t size, uint8_t ep_id);
 
 #endif/*!USBCDC_H_*/

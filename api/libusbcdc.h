@@ -37,7 +37,9 @@
  * https://www.usb.org/sites/default/files/documents/hid1_11.pdf
  */
 
-
+/***********************************************************
+ * prototypes definitions
+ */
 
 /***********************************************************
  * Upper layer-defined callbacks
@@ -46,10 +48,6 @@
  * because such paradigm implies that there is a single upper HID stack being
  * executed in the same time.
  *
- * When using a hybrid HID device, for e.g. a device handling the following services:
- *
- * - FIDO device, for U2F service
- * - keyboard device
  *
  * As a consequence, the HID stack must handle upper layer calls through registered
  * callbacks, based on the interface registration. The HID stack will then
@@ -69,7 +67,8 @@
  * for security reason.
  */
 
-typedef mbed_error_t (*usb_cdc_data_received_t)(uint8_t hid_handler, uint8_t *data, uint16_t len);
+typedef mbed_error_t (*usb_cdc_receive_t)(uint8_t cdc_handler, uint8_t *frame, uint16_t len);
+
 /*
  * INFO:
  *
@@ -85,17 +84,21 @@ typedef mbed_error_t (*usb_cdc_data_received_t)(uint8_t hid_handler, uint8_t *da
  */
 
 
-mbed_error_t usbcdc_declare(uint32_t usbxdci_handler,
-                            uint8_t           cdc_subclass,
-                            uint8_t           cdc_protocol,
-                            uint16_t          ep_mpsize,
+mbed_error_t usbcdc_declare(uint32_t          usbxdci_handler,
+                            uint16_t          data_mpsize,
                             uint8_t          *cdc_handler,
-                            uint8_t          *in_buff,
-                            uint32_t          in_buff_len);
+                            uint8_t          *data_buf,
+                            uint32_t          data_buf_len,
+                            uint8_t          *ctrl_buf,
+                            uint16_t          ctrl_buf_len);
 
 
-mbed_error_t usbcdc_configure(uint8_t               cdc_handler,
-                              usb_cdc_data_received_t     cdc_receive_frame);
+mbed_error_t usbcdc_configure(uint8_t                     cdc_handler,
+                              usb_cdc_receive_t           cdc_receive_data_frame,
+                              usb_cdc_receive_t           cdc_receive_ctrl_frame);
+
+
+void usbcdc_recv_on_endpoints(void);
 
 
 mbed_error_t usbcdc_send_data(uint8_t              cdc_handler,
@@ -116,7 +119,8 @@ mbed_error_t usbcdc_send_data(uint8_t              cdc_handler,
  *   handled at HID stack level). These requests may impact the upper stack which can,
  *   in consequence, react in the trigger.
  */
-void usbcdc_data_sent_trigger(uint8_t hid_handler, uint8_t index);
+void usbcdc_data_sent_trigger(uint8_t cdc_handler, uint8_t index);
 
+mbed_error_t usbcdc_exec(void);
 
 #endif/*!LIBUSBHID*/

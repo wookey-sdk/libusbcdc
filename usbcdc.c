@@ -26,15 +26,123 @@
 #include "api/libusbcdc.h"
 #include "libc/string.h"
 #include "libc/sync.h"
+#include "libc/nostd.h"
 #include "libc/sanhandlers.h"
 #include "libusbctrl.h"
 #include "usbcdc.h"
 #include "usbcdc_requests.h"
 
 
+typedef struct __packed {
+    uint8_t bLength;
+    uint8_t bDescriptorType;
+    uint8_t bDescriptorSubtype;
+    uint8_t bcdCDC_hi; /*CDC spec release */
+    uint8_t bcdCDC_lo; /*CDC spec release */
+} header_functional_desc_t;
+
+typedef struct __packed {
+    uint8_t bFunctionLength;
+    uint8_t bDescriptorType;
+    uint8_t bDescriptorSubtype;
+    uint8_t bmCapabilities;
+    uint8_t bDataInterface;
+} call_mgmt_functional_desc_t;
+
+typedef struct __packed {
+    uint8_t bFunctionLength;
+    uint8_t bDescriptorType;
+    uint8_t bDescriptorSubtype;
+    uint8_t bmCapabilities;
+} acm_functional_desc_t;
+
+typedef struct __packed {
+    uint8_t bFunctionLength;
+    uint8_t bDescriptorType;
+    uint8_t bDescriptorSubtype;
+    uint8_t bMasterInterface;
+    uint8_t bSlaveInterface0;
+} union_functional_desc_t;
+
+typedef struct __packed {
+    header_functional_desc_t    header;
+    call_mgmt_functional_desc_t call;
+    acm_functional_desc_t       acm;
+    union_functional_desc_t     un;
+} full_functional_desc_t;
+
+full_functional_desc_t funcdesc = {
+    .header = {
+        .bLength = 0x05,
+        .bDescriptorType = 0x24,
+        .bDescriptorSubtype = 0x00,
+        .bcdCDC_hi = 0x10,
+        .bcdCDC_lo = 0x01
+    },
+    .call = {
+        .bFunctionLength = 0x05,
+        .bDescriptorType = 0x24,
+        .bDescriptorSubtype = 0x01,
+        .bmCapabilities = 0x00,
+        .bDataInterface = 0x01
+    },
+    .acm = {
+        .bFunctionLength = 0x04,
+        .bDescriptorType = 0x24,
+        .bDescriptorSubtype = 0x02,
+        .bmCapabilities = 0x02
+    },
+    .un = {
+        .bFunctionLength = 0x05,
+        .bDescriptorType = 0x24,
+        .bDescriptorSubtype = 0x06,
+        .bMasterInterface = 0x00,
+        .bSlaveInterface0 = 0x01
+    }
+};
+
 static bool data_being_sent = false;
 
 static usbcdc_context_t usbcdc_ctx = { 0 };
+
+
+
+mbed_error_t      usbcdc_get_descriptor(uint8_t             iface_id,
+                                        uint8_t            *buf,
+                                        uint8_t            *desc_size,
+                                        uint32_t            usbdci_handler __attribute__((unused)))
+{
+    mbed_error_t errcode = MBED_ERROR_NONE;
+    if (buf == NULL || desc_size == NULL) {
+        errcode = MBED_ERROR_INVPARAM;
+        goto err;
+    }
+    if (iface_id == usbcdc_ctx.cdc_ifaces[0].iface.id) {
+        uint8_t my_desc_len = sizeof(funcdesc);
+        uint8_t to_copy = my_desc_len > *desc_size ? *desc_size : my_desc_len;
+        memcpy(buf, (uint8_t*)&funcdesc, to_copy);
+        *desc_size = to_copy;
+    } else {
+        *desc_size = 0;
+    }
+err:
+    return errcode;
+}
+
+uint8_t ctrlbuf[8];
+uint16_t ctrlbuf_len = 8;
+
+void usbcdc_recv_on_endpoints(void)
+{
+    /* FIXME hardcoded */
+    usb_backend_drv_set_recv_fifo(usbcdc_ctx.cdc_ifaces[0].buf, usbcdc_ctx.cdc_ifaces[0].buf_len,usbcdc_ctx.cdc_ifaces[0].iface.eps[2].ep_num);
+//    printf("activate endpoint %d\n", usbcdc_ctx.cdc_ifaces[0].iface.eps[2].ep_num);
+//    usb_backend_drv_activate_endpoint(usbcdc_ctx.cdc_ifaces[0].iface.eps[2].ep_num, USB_BACKEND_DRV_EP_DIR_OUT);
+
+    usb_backend_drv_set_recv_fifo(usbcdc_ctx.cdc_ifaces[1].buf, usbcdc_ctx.cdc_ifaces[1].buf_len,usbcdc_ctx.cdc_ifaces[1].iface.eps[0].ep_num);
+//    printf("activate endpoint %d\n", usbcdc_ctx.cdc_ifaces[1].iface.eps[0].ep_num);
+    usb_backend_drv_activate_endpoint(usbcdc_ctx.cdc_ifaces[1].iface.eps[0].ep_num, USB_BACKEND_DRV_EP_DIR_OUT);
+}
 
 
 static inline uint8_t get_in_epid(usbctrl_interface_t const * const iface)
@@ -69,7 +177,7 @@ err:
 }
 
 
-static mbed_error_t usbcdc_received(uint32_t dev_id __attribute__((unused)), uint32_t size, uint8_t ep_id)
+static inline mbed_error_t usbcdc_received(uint32_t dev_id __attribute__((unused)), uint32_t size, uint8_t ep_id)
 {
     mbed_error_t errcode = MBED_ERROR_NONE;
     uint8_t iface = 0;
@@ -100,7 +208,7 @@ err:
     return errcode;
 }
 
-static
+static inline
 mbed_error_t usbcdc_data_sent(uint32_t dev_id __attribute__((unused)), uint32_t size __attribute__((unused)), uint8_t ep_id __attribute((unused)))
 {
     log_printf("[USBCDC] data (%d B) sent on EP %d\n", size, ep_id);
@@ -108,34 +216,9 @@ mbed_error_t usbcdc_data_sent(uint32_t dev_id __attribute__((unused)), uint32_t 
     return MBED_ERROR_NONE;
 }
 
-
-/*@
-  @ assigns \nothing ;
-  @ ensures \result == &usbcdc_ctx;
-  */
-usbcdc_context_t *usbcdc_get_context(void)
+static
+mbed_error_t usbcdc_data_ep_handler(uint32_t dev_id __attribute__((unused)), uint32_t size __attribute__((unused)), uint8_t ep_id __attribute((unused)))
 {
-    return (usbcdc_context_t*)&usbcdc_ctx;
-}
-
-bool usbcdc_interface_exists(uint8_t cdc_handler)
-{
-    usbcdc_context_t *ctx = usbcdc_get_context();
-    bool result = false;
-    if (cdc_handler < ctx->num_iface && cdc_handler < MAX_USBCDC_IFACES) {
-        /* INFO: boolean normalization based on false (lonely checked value.
-         * Thus, this is not fault-resilient as any non-zero value generates a
-         * TRUE result */
-        result = !(ctx->cdc_ifaces[cdc_handler].declared == false);
-    }
-    return result;
-}
-
-static mbed_error_t usbcdc_ep_trigger(uint32_t dev_id, uint32_t size, uint8_t ep_id)
-{
-    /* full duplex trigger, detect if the event on the EP is a IN event or an OUT event,
-     * and call the corresponding function */
-
     usb_ep_dir_t dir;
     usb_backend_drv_ep_state_t state;
     mbed_error_t errcode;
@@ -152,11 +235,11 @@ static mbed_error_t usbcdc_ep_trigger(uint32_t dev_id, uint32_t size, uint8_t ep
 
     switch (dir) {
         case USB_EP_DIR_IN:
-            log_printf("[USBCDC] triggered on IN event\n");
+            log_printf("[USBHID] triggered on IN event\n");
             errcode = usbcdc_data_sent(dev_id, size, ep_id);
             break;
         case USB_EP_DIR_OUT:
-            log_printf("[USBCDC] triggered on OUT event\n");
+            log_printf("[USBHID] triggered on OUT event\n");
             errcode = usbcdc_received(dev_id, size, ep_id);
             break;
         default:
@@ -166,16 +249,33 @@ static mbed_error_t usbcdc_ep_trigger(uint32_t dev_id, uint32_t size, uint8_t ep
     return errcode;
 }
 
+/*@
+  @ assigns \nothing ;
+  @ ensures \result == &usbcdc_ctx;
+  */
+usbcdc_context_t *usbcdc_get_context(void)
+{
+    return (usbcdc_context_t*)&usbcdc_ctx;
+}
+
+bool usbcdc_interface_exists(uint8_t cdc_handler)
+{
+    usbcdc_context_t *ctx = usbcdc_get_context();
+    bool result = false;
+    if (cdc_handler < ctx->num_iface && cdc_handler < 2*MAX_USBCDC_FUNCTIONS) {
+        /* INFO: boolean normalization based on false (lonely checked value.
+         * Thus, this is not fault-resilient as any non-zero value generates a
+         * TRUE result */
+        result = !(ctx->cdc_ifaces[cdc_handler].declared == false);
+    }
+    return result;
+}
 
 
-
-mbed_error_t usbcdc_declare(uint32_t usbxdci_handler,
-                            uint8_t           cdc_subclass,
-                            uint8_t           cdc_protocol,
-                            uint16_t          ep_mpsize,
-                            uint8_t          *cdc_handler,
-                            uint8_t          *in_buff,
-                            uint32_t          in_buff_len)
+static mbed_error_t usbcdc_declare_ctrl(uint32_t          usbxdci_handler,
+                                        uint8_t          *cdc_handler,
+                                        uint8_t          *in_buff,
+                                        uint32_t          in_buff_len)
 {
     mbed_error_t errcode = MBED_ERROR_NONE;
     /* sanitize */
@@ -184,7 +284,7 @@ mbed_error_t usbcdc_declare(uint32_t usbxdci_handler,
         errcode = MBED_ERROR_INVPARAM;
         goto err;
     }
-    if (usbcdc_ctx.num_iface >= MAX_USBCDC_IFACES) {
+    if (usbcdc_ctx.num_iface >= 2*MAX_USBCDC_FUNCTIONS) {
         log_printf("[USBCDC] error ! no more iface storage !\n");
         errcode = MBED_ERROR_NOSTORAGE;
         goto err;
@@ -205,40 +305,60 @@ mbed_error_t usbcdc_declare(uint32_t usbxdci_handler,
     memset((void*)&usbcdc_ctx.cdc_ifaces[i], 0x0, sizeof(usbctrl_interface_t));
 
     ADD_LOC_HANDLER(usbcdc_class_rqst_handler);
-    ADD_LOC_HANDLER(usbcdc_data_sent);
-    ADD_LOC_HANDLER(usbcdc_received);
+    ADD_LOC_HANDLER(usbcdc_get_descriptor);
+    ADD_LOC_HANDLER(usbcdc_data_rqst_recv);
+    ADD_LOC_HANDLER(usbcdc_data_rqst_sent);
+    ADD_LOC_HANDLER(usbcdc_get_descriptor);
+    ADD_LOC_HANDLER(usbcdc_ctrl_send);
+
+    usbcdc_ctx.rqstbuflen = 64;
+    memset(usbcdc_ctx.rqstbuf, 0x0, 64);
 
     usbcdc_ctx.cdc_ifaces[i].iface.usb_class = USB_CLASS_CDC_CTRL;
-    usbcdc_ctx.cdc_ifaces[i].iface.usb_subclass = cdc_subclass; /* SCSI transparent cmd set (i.e. use INQUIRY) */
-    usbcdc_ctx.cdc_ifaces[i].iface.usb_protocol = cdc_protocol; /* Protocol BBB (Bulk only) */
+    usbcdc_ctx.cdc_ifaces[i].iface.usb_subclass = 0x02; /* ACM Subclass */
+    usbcdc_ctx.cdc_ifaces[i].iface.usb_protocol = 0x01; /*Common AT commands */
     usbcdc_ctx.cdc_ifaces[i].iface.dedicated = false;
+    usbcdc_ctx.cdc_ifaces[i].iface.class_desc_handler = usbcdc_get_descriptor;
+    usbcdc_ctx.cdc_ifaces[i].iface.rqst_handler = usbcdc_class_rqst_handler;
+    usbcdc_ctx.cdc_ifaces[i].iface.composite_function = true;
+    usbcdc_ctx.cdc_ifaces[i].iface.composite_function_id = 1;
+
+    usbcdc_ctx.cdc_ifaces[i].buf = ctrlbuf;
+    usbcdc_ctx.cdc_ifaces[i].buf_len = ctrlbuf_len;
 
     uint8_t curr_ep = 0;
 
-    /*
-     * IN EP for low latency ctrl transmission with the host
-     */
-    usbcdc_ctx.cdc_ifaces[i].iface.eps[curr_ep].type        = USB_EP_TYPE_BULK;
-    usbcdc_ctx.cdc_ifaces[i].iface.eps[curr_ep].dir         = USB_EP_DIR_IN;
-    usbcdc_ctx.cdc_ifaces[i].iface.eps[curr_ep].attr        = USB_EP_ATTR_NO_SYNC;
-    usbcdc_ctx.cdc_ifaces[i].iface.eps[curr_ep].usage       = USB_EP_USAGE_DATA;
-    usbcdc_ctx.cdc_ifaces[i].iface.eps[curr_ep].pkt_maxsize = ep_mpsize; /* mpsize on EP1 */
-    usbcdc_ctx.cdc_ifaces[i].iface.eps[curr_ep].ep_num      = 1; /* this may be updated by libctrl */
-    usbcdc_ctx.cdc_ifaces[i].iface.eps[curr_ep].handler     = usbcdc_data_sent;
-    usbcdc_ctx.cdc_ifaces[i].iface.eps[curr_ep].poll_interval = 0;
-        curr_ep++;
-
-    /*
-     * IN & OUT dedicated EP for low latency data transmission with the host
-     */
-    usbcdc_ctx.cdc_ifaces[i].iface.eps[curr_ep].type        = USB_EP_TYPE_BULK;
+    usbcdc_ctx.cdc_ifaces[i].iface.eps[curr_ep].type        = USB_EP_TYPE_CONTROL,
     usbcdc_ctx.cdc_ifaces[i].iface.eps[curr_ep].dir         = USB_EP_DIR_OUT;
     usbcdc_ctx.cdc_ifaces[i].iface.eps[curr_ep].attr        = USB_EP_ATTR_NO_SYNC;
     usbcdc_ctx.cdc_ifaces[i].iface.eps[curr_ep].usage       = USB_EP_USAGE_DATA;
-    usbcdc_ctx.cdc_ifaces[i].iface.eps[curr_ep].pkt_maxsize = ep_mpsize; /* mpsize on EP1 */
+    usbcdc_ctx.cdc_ifaces[i].iface.eps[curr_ep].pkt_maxsize = 64; /* mpsize on EP1 */
+    usbcdc_ctx.cdc_ifaces[i].iface.eps[curr_ep].ep_num      = 0; /* this may be updated by libctrl */
+    usbcdc_ctx.cdc_ifaces[i].iface.eps[curr_ep].handler     = usbcdc_data_rqst_recv;
+    usbcdc_ctx.cdc_ifaces[i].iface.eps[curr_ep].poll_interval = 16; /*0x10 ms in FS */
+    curr_ep++;
+
+    usbcdc_ctx.cdc_ifaces[i].iface.eps[curr_ep].type        = USB_EP_TYPE_CONTROL,
+    usbcdc_ctx.cdc_ifaces[i].iface.eps[curr_ep].dir         = USB_EP_DIR_IN;
+    usbcdc_ctx.cdc_ifaces[i].iface.eps[curr_ep].attr        = USB_EP_ATTR_NO_SYNC;
+    usbcdc_ctx.cdc_ifaces[i].iface.eps[curr_ep].usage       = USB_EP_USAGE_DATA;
+    usbcdc_ctx.cdc_ifaces[i].iface.eps[curr_ep].pkt_maxsize = 64; /* mpsize on EP1 */
+    usbcdc_ctx.cdc_ifaces[i].iface.eps[curr_ep].ep_num      = 0; /* this may be updated by libctrl */
+    usbcdc_ctx.cdc_ifaces[i].iface.eps[curr_ep].handler     = usbcdc_data_rqst_sent;
+    usbcdc_ctx.cdc_ifaces[i].iface.eps[curr_ep].poll_interval = 16; /*0x10 ms in FS */
+    curr_ep++;
+
+    /*
+     * IN EP for low latency ctrl transmission with the host
+     */
+    usbcdc_ctx.cdc_ifaces[i].iface.eps[curr_ep].type        = USB_EP_TYPE_INTERRUPT,
+    usbcdc_ctx.cdc_ifaces[i].iface.eps[curr_ep].dir         = USB_EP_DIR_IN;
+    usbcdc_ctx.cdc_ifaces[i].iface.eps[curr_ep].attr        = USB_EP_ATTR_NO_SYNC;
+    usbcdc_ctx.cdc_ifaces[i].iface.eps[curr_ep].usage       = USB_EP_USAGE_DATA;
+    usbcdc_ctx.cdc_ifaces[i].iface.eps[curr_ep].pkt_maxsize = 8; /* mpsize on EP1 */
     usbcdc_ctx.cdc_ifaces[i].iface.eps[curr_ep].ep_num      = 1; /* this may be updated by libctrl */
-    usbcdc_ctx.cdc_ifaces[i].iface.eps[curr_ep].handler     = usbcdc_received;
-    usbcdc_ctx.cdc_ifaces[i].iface.eps[curr_ep].poll_interval = 0;
+    usbcdc_ctx.cdc_ifaces[i].iface.eps[curr_ep].handler     = usbcdc_ctrl_send;
+    usbcdc_ctx.cdc_ifaces[i].iface.eps[curr_ep].poll_interval = 16; /*0x10 ms in FS */
     curr_ep++;
 
     usbcdc_ctx.cdc_ifaces[i].iface.usb_ep_number = curr_ep;
@@ -249,81 +369,101 @@ mbed_error_t usbcdc_declare(uint32_t usbxdci_handler,
         goto err;
     }
 
-    /* set IN EP real identifier */
-    uint8_t epid = get_in_epid(&usbcdc_ctx.cdc_ifaces[i].iface);
-    usbcdc_ctx.cdc_ifaces[i].inep.id = epid;
+    usbcdc_ctx.cdc_ifaces[i].iface.usb_ep_number = curr_ep;
 
     /* set current interface effective identifier */
-    usbcdc_ctx.cdc_ifaces[i].id   = usbcdc_ctx.cdc_ifaces[i].iface.id;
-    usbcdc_ctx.cdc_ifaces[i].in_buff = in_buff;
-    usbcdc_ctx.cdc_ifaces[i].in_buff_len = in_buff_len;
+    usbcdc_ctx.cdc_ifaces[i].id  = usbcdc_ctx.cdc_ifaces[i].iface.id;
+    usbcdc_ctx.cdc_ifaces[i].buf = in_buff;
+    usbcdc_ctx.cdc_ifaces[i].buf_len = in_buff_len;
 
     /* the configuration step not yet passed */
     usbcdc_ctx.cdc_ifaces[i].configured = false;
     usbcdc_ctx.cdc_ifaces[i].declared = true;
 
-
-    i++;
+    *cdc_handler = usbcdc_ctx.num_iface; /* returning ctrl iface as handler */
     usbcdc_ctx.num_iface++;
-    curr_ep = 0;
+    request_data_membarrier();
+err:
+    return errcode;
+
+}
+
+
+
+static mbed_error_t usbcdc_declare_data(uint32_t          usbxdci_handler,
+                                        uint16_t          ep_mpsize,
+                                        uint8_t          *in_buff,
+                                        uint32_t          in_buff_len)
+{
+    mbed_error_t errcode = MBED_ERROR_NONE;
+    /* sanitize */
+    if (usbcdc_ctx.num_iface >= 2*MAX_USBCDC_FUNCTIONS) {
+        log_printf("[USBCDC] error ! no more iface storage !\n");
+        errcode = MBED_ERROR_NOSTORAGE;
+        goto err;
+    }
+    if (in_buff == NULL) {
+        log_printf("[USBCDC] error ! buffer given is null !\n");
+        errcode = MBED_ERROR_NOSTORAGE;
+        goto err;
+    }
+    if (in_buff_len == 0) {
+        log_printf("[USBCDC] error ! buffer given is null-sized !\n");
+        errcode = MBED_ERROR_NOSTORAGE;
+        goto err;
+    }
+
+
+    uint8_t i = usbcdc_ctx.num_iface;
+    memset((void*)&usbcdc_ctx.cdc_ifaces[i], 0x0, sizeof(usbctrl_interface_t));
+
+    ADD_LOC_HANDLER(usbcdc_class_rqst_handler);
+    ADD_LOC_HANDLER(usbcdc_data_ep_handler);
+
+    uint8_t curr_ep = 0;
 
     usbcdc_ctx.cdc_ifaces[i].iface.usb_class = USB_CLASS_CDC_DATA;
-    usbcdc_ctx.cdc_ifaces[i].iface.usb_subclass = cdc_subclass; /* SCSI transparent cmd set (i.e. use INQUIRY) */
-    usbcdc_ctx.cdc_ifaces[i].iface.usb_protocol = cdc_protocol; /* Protocol BBB (Bulk only) */
+    usbcdc_ctx.cdc_ifaces[i].iface.usb_subclass = 0x00;
+    usbcdc_ctx.cdc_ifaces[i].iface.usb_protocol = 0x00;
+    usbcdc_ctx.cdc_ifaces[i].iface.rqst_handler = NULL;
+    usbcdc_ctx.cdc_ifaces[i].iface.class_desc_handler = NULL;
     usbcdc_ctx.cdc_ifaces[i].iface.dedicated = false;
+    usbcdc_ctx.cdc_ifaces[i].iface.composite_function = true;
+    usbcdc_ctx.cdc_ifaces[i].iface.composite_function_id = 1;
+
 
 
     /*
      * IN EP for low latency ctrl transmission with the host
      */
     usbcdc_ctx.cdc_ifaces[i].iface.eps[curr_ep].type        = USB_EP_TYPE_BULK;
-    usbcdc_ctx.cdc_ifaces[i].iface.eps[curr_ep].dir         = USB_EP_DIR_IN;
+    usbcdc_ctx.cdc_ifaces[i].iface.eps[curr_ep].dir         = USB_EP_DIR_BOTH;
     usbcdc_ctx.cdc_ifaces[i].iface.eps[curr_ep].attr        = USB_EP_ATTR_NO_SYNC;
     usbcdc_ctx.cdc_ifaces[i].iface.eps[curr_ep].usage       = USB_EP_USAGE_DATA;
     usbcdc_ctx.cdc_ifaces[i].iface.eps[curr_ep].pkt_maxsize = ep_mpsize; /* mpsize on EP1 */
-    usbcdc_ctx.cdc_ifaces[i].iface.eps[curr_ep].ep_num      = 1; /* this may be updated by libctrl */
-    usbcdc_ctx.cdc_ifaces[i].iface.eps[curr_ep].handler     = usbcdc_data_sent;
-        curr_ep++;
+    usbcdc_ctx.cdc_ifaces[i].iface.eps[curr_ep].ep_num      = 2; /* this may be updated by libctrl */
+    usbcdc_ctx.cdc_ifaces[i].iface.eps[curr_ep].handler     = usbcdc_data_ep_handler;
 
-    /*
-     * IN & OUT dedicated EP for low latency data transmission with the host
-     */
-    usbcdc_ctx.cdc_ifaces[i].iface.eps[curr_ep].type        = USB_EP_TYPE_BULK;
-    usbcdc_ctx.cdc_ifaces[i].iface.eps[curr_ep].dir         = USB_EP_DIR_OUT;
-    usbcdc_ctx.cdc_ifaces[i].iface.eps[curr_ep].attr        = USB_EP_ATTR_NO_SYNC;
-    usbcdc_ctx.cdc_ifaces[i].iface.eps[curr_ep].usage       = USB_EP_USAGE_DATA;
-    usbcdc_ctx.cdc_ifaces[i].iface.eps[curr_ep].pkt_maxsize = ep_mpsize; /* mpsize on EP1 */
-    usbcdc_ctx.cdc_ifaces[i].iface.eps[curr_ep].ep_num      = 1; /* this may be updated by libctrl */
-    usbcdc_ctx.cdc_ifaces[i].iface.eps[curr_ep].handler     = usbcdc_received;
-    usbcdc_ctx.cdc_ifaces[i].iface.eps[curr_ep].poll_interval = 0;
     curr_ep++;
 
 
 
-    /* @ assert curr_ep <= 2 ; */
     usbcdc_ctx.cdc_ifaces[i].iface.usb_ep_number = curr_ep;
-
-
     errcode = usbctrl_declare_interface(usbxdci_handler, (usbctrl_interface_t*)&(usbcdc_ctx.cdc_ifaces[i].iface));
     if (errcode != MBED_ERROR_NONE) {
         log_printf("[USBCDC] Error while declaring interface: err=%d !\n", errcode);
         goto err;
     }
 
-    /* set IN EP real identifier */
-    epid = get_in_epid(&usbcdc_ctx.cdc_ifaces[i].iface);
-    usbcdc_ctx.cdc_ifaces[i].inep.id = epid;
-
     /* set current interface effective identifier */
     usbcdc_ctx.cdc_ifaces[i].id   = usbcdc_ctx.cdc_ifaces[i].iface.id;
-    usbcdc_ctx.cdc_ifaces[i].in_buff = in_buff;
-    usbcdc_ctx.cdc_ifaces[i].in_buff_len = in_buff_len;
+    usbcdc_ctx.cdc_ifaces[i].buf = in_buff;
+    usbcdc_ctx.cdc_ifaces[i].buf_len = in_buff_len;
 
     /* the configuration step not yet passed */
     usbcdc_ctx.cdc_ifaces[i].configured = false;
     usbcdc_ctx.cdc_ifaces[i].declared = true;
 
-    *cdc_handler = usbcdc_ctx.num_iface;
     usbcdc_ctx.num_iface++;
     request_data_membarrier();
 
@@ -331,8 +471,29 @@ err:
     return errcode;
 }
 
-mbed_error_t usbcdc_configure(uint8_t               cdc_handler,
-                              usb_cdc_data_received_t     cdc_receive_frame)
+mbed_error_t usbcdc_declare(uint32_t          usbxdci_handler,
+                            uint16_t          data_mpsize,
+                            uint8_t          *cdc_handler,
+                            uint8_t          *data_buf,
+                            uint32_t          data_buf_len,
+                            uint8_t          *ctrl_buf,
+                            uint16_t          ctrl_buf_len)
+{
+    mbed_error_t errcode = MBED_ERROR_NONE;
+
+    if ((errcode = usbcdc_declare_ctrl(usbxdci_handler, cdc_handler, data_buf, data_buf_len)) != MBED_ERROR_NONE) {
+        goto err;
+    }
+    /* FIXME data mpsize */
+    errcode = usbcdc_declare_data(usbxdci_handler, data_mpsize, ctrl_buf, ctrl_buf_len);
+err:
+    return errcode;
+}
+
+
+mbed_error_t usbcdc_configure(uint8_t                   cdc_handler,
+                              usb_cdc_receive_t         cdc_receive_data_frame,
+                              usb_cdc_receive_t         cdc_receive_ctrl_frame)
 {
     mbed_error_t errcode = MBED_ERROR_NONE;
     usbcdc_context_t *ctx = usbcdc_get_context();
@@ -341,7 +502,7 @@ mbed_error_t usbcdc_configure(uint8_t               cdc_handler,
         errcode = MBED_ERROR_INVPARAM;
         goto err;
     }
-    if (cdc_receive_frame == NULL) {
+    if (cdc_receive_data_frame == NULL || cdc_receive_ctrl_frame == NULL) {
         errcode = MBED_ERROR_INVPARAM;
         goto err;
     }
@@ -349,26 +510,25 @@ mbed_error_t usbcdc_configure(uint8_t               cdc_handler,
     /* set each of the interface callbacks */
     //ctx->cdc_ifaces[cdc_handler].receive_frame_cb = cdc_receive_frame;
     /* set interface as configured */
+    ctx->cdc_ifaces[cdc_handler].receive = cdc_receive_ctrl_frame;
+    ctx->cdc_ifaces[cdc_handler+1].receive = cdc_receive_data_frame;
     ctx->cdc_ifaces[cdc_handler].configured = true;
 
 err:
     return errcode;
 }
 
-#if 0
-mbed_error_t usbcdc_response_done(uint8_t hid_handler)
+mbed_error_t usbcdc_ctrl_send(uint32_t dev_id __attribute__((unused)), uint32_t size, uint8_t ep_id)
 {
-    mbed_error_t errcode = MBED_ERROR_NONE;
-    if (!usbcdc_interface_exists(hid_handler)) {
-        errcode = MBED_ERROR_INVPARAM;
-        goto err;
-    }
-    uint8_t epid = get_in_epid(&usbcdc_ctx.hid_ifaces[hid_handler].iface);
-    usb_backend_drv_send_zlp(epid);
-err:
-    return errcode;
+    size = size;
+    ep_id = ep_id;
+    /* trigger upper layer */
+    usbcdc_context_t *ctx = usbcdc_get_context();
+    /* FIXME hardcoded */
+    ctx->cdc_ifaces[0].receive(0, &ctx->cdc_ifaces[0].buf[0], size);
+    /* frame received on control plane */
+    return MBED_ERROR_NONE;
 }
-#endif
 
 mbed_error_t usbcdc_send_data(uint8_t              cdc_handler,
                               uint8_t*             response,
@@ -411,3 +571,22 @@ err:
     return errcode;
 }
 
+/* FIXME extern volatile */
+extern volatile bool rqst_data_received;
+extern volatile bool rqst_data_sent;
+extern volatile bool rqst_data_being_send;
+
+mbed_error_t usbcdc_exec(void)
+{
+    usbcdc_recv_on_endpoints();
+    if (rqst_data_received && !rqst_data_being_send) {
+        log_printf("ack on EP0\n");
+        rqst_data_received = false;
+        usb_backend_drv_ack(EP0, USB_BACKEND_DRV_EP_DIR_OUT);
+    }
+    if (rqst_data_sent) {
+        rqst_data_being_send = false;
+        rqst_data_sent = false;
+    }
+    return MBED_ERROR_NONE;
+}

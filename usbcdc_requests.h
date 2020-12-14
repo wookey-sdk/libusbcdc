@@ -29,6 +29,15 @@
 #include "libusbctrl.h"
 #include "autoconf.h"
 
+mbed_error_t usbcdc_data_rqst_recv(uint32_t dev_id __attribute__((unused)),
+                                   uint32_t size,
+                                   uint8_t ep_id __attribute((unused)));
+
+
+mbed_error_t usbcdc_data_rqst_sent(uint32_t dev_id __attribute__((unused)),
+                                   uint32_t size __attribute__((unused)),
+                                   uint8_t ep_id __attribute((unused)));
+
 mbed_error_t usbcdc_class_rqst_handler(uint32_t             usbxdci_handler,
                                        usbctrl_setup_pkt_t *packet);
 
