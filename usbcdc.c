@@ -31,117 +31,40 @@
 #include "libusbctrl.h"
 #include "usbcdc.h"
 #include "usbcdc_requests.h"
+#include "usbcdc_descriptor.h"
 
-
-typedef struct __packed {
-    uint8_t bLength;
-    uint8_t bDescriptorType;
-    uint8_t bDescriptorSubtype;
-    uint8_t bcdCDC_hi; /*CDC spec release */
-    uint8_t bcdCDC_lo; /*CDC spec release */
-} header_functional_desc_t;
-
-typedef struct __packed {
-    uint8_t bFunctionLength;
-    uint8_t bDescriptorType;
-    uint8_t bDescriptorSubtype;
-    uint8_t bmCapabilities;
-    uint8_t bDataInterface;
-} call_mgmt_functional_desc_t;
-
-typedef struct __packed {
-    uint8_t bFunctionLength;
-    uint8_t bDescriptorType;
-    uint8_t bDescriptorSubtype;
-    uint8_t bmCapabilities;
-} acm_functional_desc_t;
-
-typedef struct __packed {
-    uint8_t bFunctionLength;
-    uint8_t bDescriptorType;
-    uint8_t bDescriptorSubtype;
-    uint8_t bMasterInterface;
-    uint8_t bSlaveInterface0;
-} union_functional_desc_t;
-
-typedef struct __packed {
-    header_functional_desc_t    header;
-    call_mgmt_functional_desc_t call;
-    acm_functional_desc_t       acm;
-    union_functional_desc_t     un;
-} full_functional_desc_t;
-
-full_functional_desc_t funcdesc = {
-    .header = {
-        .bLength = 0x05,
-        .bDescriptorType = 0x24,
-        .bDescriptorSubtype = 0x00,
-        .bcdCDC_hi = 0x10,
-        .bcdCDC_lo = 0x01
-    },
-    .call = {
-        .bFunctionLength = 0x05,
-        .bDescriptorType = 0x24,
-        .bDescriptorSubtype = 0x01,
-        .bmCapabilities = 0x00,
-        .bDataInterface = 0x01
-    },
-    .acm = {
-        .bFunctionLength = 0x04,
-        .bDescriptorType = 0x24,
-        .bDescriptorSubtype = 0x02,
-        .bmCapabilities = 0x02
-    },
-    .un = {
-        .bFunctionLength = 0x05,
-        .bDescriptorType = 0x24,
-        .bDescriptorSubtype = 0x06,
-        .bMasterInterface = 0x00,
-        .bSlaveInterface0 = 0x01
-    }
-};
 
 static bool data_being_sent = false;
+static bool data_received = false;
+static uint32_t received_size = 0;
 
 static usbcdc_context_t usbcdc_ctx = { 0 };
 
 
 
-mbed_error_t      usbcdc_get_descriptor(uint8_t             iface_id,
-                                        uint8_t            *buf,
-                                        uint8_t            *desc_size,
-                                        uint32_t            usbdci_handler __attribute__((unused)))
-{
-    mbed_error_t errcode = MBED_ERROR_NONE;
-    if (buf == NULL || desc_size == NULL) {
-        errcode = MBED_ERROR_INVPARAM;
-        goto err;
-    }
-    if (iface_id == usbcdc_ctx.cdc_ifaces[0].iface.id) {
-        uint8_t my_desc_len = sizeof(funcdesc);
-        uint8_t to_copy = my_desc_len > *desc_size ? *desc_size : my_desc_len;
-        memcpy(buf, (uint8_t*)&funcdesc, to_copy);
-        *desc_size = to_copy;
-    } else {
-        *desc_size = 0;
-    }
-err:
-    return errcode;
-}
-
 uint8_t ctrlbuf[8];
 uint16_t ctrlbuf_len = 8;
 
-void usbcdc_recv_on_endpoints(void)
+void usbcdc_prepare_rcv(uint8_t cdc_handler) {
+    printf("set fifo for EP %d (in & out)\n", usbcdc_ctx.cdc_ifaces[cdc_handler+1].iface.eps[0].ep_num);
+    /* on a TTY, we read a char */
+    usb_backend_drv_set_recv_fifo(usbcdc_ctx.cdc_ifaces[cdc_handler+1].buf, 1,usbcdc_ctx.cdc_ifaces[cdc_handler+1].iface.eps[0].ep_num);
+}
+
+void usbcdc_recv_on_endpoints(uint8_t cdc_handler)
 {
-    /* FIXME hardcoded */
-    usb_backend_drv_set_recv_fifo(usbcdc_ctx.cdc_ifaces[0].buf, usbcdc_ctx.cdc_ifaces[0].buf_len,usbcdc_ctx.cdc_ifaces[0].iface.eps[2].ep_num);
-//    printf("activate endpoint %d\n", usbcdc_ctx.cdc_ifaces[0].iface.eps[2].ep_num);
+//    uint8_t it_ep = usbcdc_ctx.cdc_ifaces[cdc_handler].iface.usb_ep_number - 1;
+
+    //usb_backend_drv_set_recv_fifo(usbcdc_ctx.cdc_ifaces[cdc_handler].buf, usbcdc_ctx.cdc_ifaces[cdc_handler].buf_len,usbcdc_ctx.cdc_ifaces[cdc_handler].iface.eps[it_ep].ep_num);
 //    usb_backend_drv_activate_endpoint(usbcdc_ctx.cdc_ifaces[0].iface.eps[2].ep_num, USB_BACKEND_DRV_EP_DIR_OUT);
 
-    usb_backend_drv_set_recv_fifo(usbcdc_ctx.cdc_ifaces[1].buf, usbcdc_ctx.cdc_ifaces[1].buf_len,usbcdc_ctx.cdc_ifaces[1].iface.eps[0].ep_num);
+    /* Set BULK OUT Endpoint for reception. CDC-DATA is using single full duplex EP (2 pipes) */
+    /* on a TTY, we read a char */
+    usb_backend_drv_set_recv_fifo(usbcdc_ctx.cdc_ifaces[cdc_handler+1].buf, 1,usbcdc_ctx.cdc_ifaces[cdc_handler+1].iface.eps[0].ep_num);
+    usb_backend_drv_activate_endpoint(usbcdc_ctx.cdc_ifaces[cdc_handler+1].iface.eps[0].ep_num, USB_BACKEND_DRV_EP_DIR_OUT);
+    //bsb_backend_drv_activate_endpoint(usbcdc_ctx.cdc_ifaces[cdc_handler+1].iface.eps[0].ep_num, USB_BACKEND_DRV_EP_DIR_IN);
+
 //    printf("activate endpoint %d\n", usbcdc_ctx.cdc_ifaces[1].iface.eps[0].ep_num);
-    usb_backend_drv_activate_endpoint(usbcdc_ctx.cdc_ifaces[1].iface.eps[0].ep_num, USB_BACKEND_DRV_EP_DIR_OUT);
 }
 
 
@@ -181,7 +104,7 @@ static inline mbed_error_t usbcdc_received(uint32_t dev_id __attribute__((unused
 {
     mbed_error_t errcode = MBED_ERROR_NONE;
     uint8_t iface = 0;
-    log_printf("[USBCDC] Huint8_t ID packet (%d B) received on ep %d\n", size, ep_id);
+    log_printf("[USBCDC] uint8_t ID packet (%d B) received on ep %d\n", size, ep_id);
 
 
     for (iface = 0; iface < usbcdc_ctx.num_iface; ++iface)
@@ -198,8 +121,12 @@ static inline mbed_error_t usbcdc_received(uint32_t dev_id __attribute__((unused
         {
             if (usbcdc_ctx.cdc_ifaces[iface].iface.eps[ep].ep_num == ep_id)
             {
-                log_printf("[USBCDC] executing trigger for EP %d\n", ep_id);
+                //log_printf("[USBCDC] executing trigger for EP %d\n", ep_id);
+                //usbcdc_ctx.cdc_ifaces[iface].buf[size] = '\0';
+                //log_printf("[USBCDC] received: %s\n", usbcdc_ctx.cdc_ifaces[iface].buf);
                 /* FIXME: upper layer trigger */
+                set_bool_with_membarrier(&data_received, true);
+                set_u32_with_membarrier(&received_size, size);
                 goto err;
             }
         }
@@ -211,19 +138,19 @@ err:
 static inline
 mbed_error_t usbcdc_data_sent(uint32_t dev_id __attribute__((unused)), uint32_t size __attribute__((unused)), uint8_t ep_id __attribute((unused)))
 {
-    log_printf("[USBCDC] data (%d B) sent on EP %d\n", size, ep_id);
+    //log_printf("[USBCDC] data (%d B) sent on EP %d\n", size, ep_id);
     set_bool_with_membarrier(&data_being_sent, false);
     return MBED_ERROR_NONE;
 }
 
 static
-mbed_error_t usbcdc_data_ep_handler(uint32_t dev_id __attribute__((unused)), uint32_t size __attribute__((unused)), uint8_t ep_id __attribute((unused)))
+mbed_error_t usbcdc_data_ep_handler(uint32_t dev_id __attribute__((unused)), uint32_t size, uint8_t ep_id)
 {
     usb_ep_dir_t dir;
     usb_backend_drv_ep_state_t state;
     mbed_error_t errcode;
 
-    log_printf("[USBCDC] triggered on IN or OUT event\n");
+    //log_printf("[USBCDC] triggered on IN or OUT event (ep %x)\n", ep_id);
     /* are we currently receiving content (DATA_OUT state ? */
     state = usb_backend_drv_get_ep_state(ep_id, USB_BACKEND_DRV_EP_DIR_OUT);
     if (state == USB_BACKEND_DRV_EP_STATE_DATA_OUT) {
@@ -235,11 +162,11 @@ mbed_error_t usbcdc_data_ep_handler(uint32_t dev_id __attribute__((unused)), uin
 
     switch (dir) {
         case USB_EP_DIR_IN:
-            log_printf("[USBHID] triggered on IN event\n");
+            log_printf("[USBCDC] triggered on IN event\n");
             errcode = usbcdc_data_sent(dev_id, size, ep_id);
             break;
         case USB_EP_DIR_OUT:
-            log_printf("[USBHID] triggered on OUT event\n");
+            log_printf("[USBCDC] triggered on OUT event\n");
             errcode = usbcdc_received(dev_id, size, ep_id);
             break;
         default:
@@ -418,6 +345,8 @@ static mbed_error_t usbcdc_declare_data(uint32_t          usbxdci_handler,
     memset((void*)&usbcdc_ctx.cdc_ifaces[i], 0x0, sizeof(usbctrl_interface_t));
 
     ADD_LOC_HANDLER(usbcdc_class_rqst_handler);
+    ADD_LOC_HANDLER(usbcdc_received);
+    ADD_LOC_HANDLER(usbcdc_data_sent);
     ADD_LOC_HANDLER(usbcdc_data_ep_handler);
 
     uint8_t curr_ep = 0;
@@ -445,8 +374,6 @@ static mbed_error_t usbcdc_declare_data(uint32_t          usbxdci_handler,
     usbcdc_ctx.cdc_ifaces[i].iface.eps[curr_ep].handler     = usbcdc_data_ep_handler;
 
     curr_ep++;
-
-
 
     usbcdc_ctx.cdc_ifaces[i].iface.usb_ep_number = curr_ep;
     errcode = usbctrl_declare_interface(usbxdci_handler, (usbctrl_interface_t*)&(usbcdc_ctx.cdc_ifaces[i].iface));
@@ -548,13 +475,15 @@ mbed_error_t usbcdc_send_data(uint8_t              cdc_handler,
         goto err;
     }
 
+#if 0
     while (data_being_sent == true) {
         request_data_membarrier();
     }
+#endif
 
     set_bool_with_membarrier(&data_being_sent, true);
     /* total size is report + report id (one byte) */
-    uint8_t epid = get_in_epid(&usbcdc_ctx.cdc_ifaces[cdc_handler].iface);
+    uint8_t epid = get_in_epid(&usbcdc_ctx.cdc_ifaces[cdc_handler+1].iface);
     log_printf("[USBCDC] sending response on EP %d (len %d)\n", epid, response_len);
 
     errcode = usb_backend_drv_send_data(response, response_len, epid);
@@ -562,31 +491,56 @@ mbed_error_t usbcdc_send_data(uint8_t              cdc_handler,
         goto err_send;
     }
     /* wait for end of transmission */
+#if 0
     while (data_being_sent == true) {
         request_data_membarrier();
     }
+#endif
 err_send:
     set_bool_with_membarrier(&data_being_sent, false);
 err:
     return errcode;
 }
 
+#if 0
 /* FIXME extern volatile */
 extern volatile bool rqst_data_received;
 extern volatile bool rqst_data_sent;
 extern volatile bool rqst_data_being_send;
+extern volatile bool connected;
+#endif
 
-mbed_error_t usbcdc_exec(void)
+mbed_error_t usbcdc_exec(uint8_t cdc_handler)
 {
-    usbcdc_recv_on_endpoints();
+    usbcdc_recv_on_endpoints(cdc_handler);
+    /* is there async requests to handle ? */
+#if 0
     if (rqst_data_received && !rqst_data_being_send) {
         log_printf("ack on EP0\n");
         rqst_data_received = false;
-        usb_backend_drv_ack(EP0, USB_BACKEND_DRV_EP_DIR_OUT);
+        usb_backend_drv_send_zlp(EP0);
     }
     if (rqst_data_sent) {
         rqst_data_being_send = false;
         rqst_data_sent = false;
     }
+#endif
+    /* inform host that we are ready to recv */
+    //usbcdc_send_data(cdc_handler, (uint8_t*)"W", 1);
+    /* and wait for command */
+    if (data_received == true && received_size > 0) {
+        /* hardcoded: should be passed to upper layer */
+        usbcdc_ctx.cdc_ifaces[cdc_handler+1].buf[received_size] = '\0';
+        /* acknowledge reception */
+        set_bool_with_membarrier(&data_received, false);
+        char received = usbcdc_ctx.cdc_ifaces[cdc_handler+1].buf[0];
+        usbcdc_send_data(cdc_handler, (uint8_t*)&received, 1);
+        if (received == '\r') {
+            usbcdc_send_data(cdc_handler, (uint8_t*)"\nCANif> ", 8);
+        }
+        set_u32_with_membarrier(&received_size, 0);
+    }
+    request_data_membarrier();
+
     return MBED_ERROR_NONE;
 }

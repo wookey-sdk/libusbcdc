@@ -98,7 +98,9 @@ mbed_error_t usbcdc_configure(uint8_t                     cdc_handler,
                               usb_cdc_receive_t           cdc_receive_ctrl_frame);
 
 
-void usbcdc_recv_on_endpoints(void);
+void usbcdc_prepare_rcv(uint8_t cdc_handler);
+
+void usbcdc_recv_on_endpoints(uint8_t cdc_handler);
 
 
 mbed_error_t usbcdc_send_data(uint8_t              cdc_handler,
@@ -121,6 +123,6 @@ mbed_error_t usbcdc_send_data(uint8_t              cdc_handler,
  */
 void usbcdc_data_sent_trigger(uint8_t cdc_handler, uint8_t index);
 
-mbed_error_t usbcdc_exec(void);
+mbed_error_t usbcdc_exec(uint8_t cdc_handler);
 
 #endif/*!LIBUSBHID*/
