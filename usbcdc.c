@@ -53,18 +53,17 @@ void usbcdc_prepare_rcv(uint8_t cdc_handler) {
 
 void usbcdc_recv_on_endpoints(uint8_t cdc_handler)
 {
-//    uint8_t it_ep = usbcdc_ctx.cdc_ifaces[cdc_handler].iface.usb_ep_number - 1;
-
-    //usb_backend_drv_set_recv_fifo(usbcdc_ctx.cdc_ifaces[cdc_handler].buf, usbcdc_ctx.cdc_ifaces[cdc_handler].buf_len,usbcdc_ctx.cdc_ifaces[cdc_handler].iface.eps[it_ep].ep_num);
-//    usb_backend_drv_activate_endpoint(usbcdc_ctx.cdc_ifaces[0].iface.eps[2].ep_num, USB_BACKEND_DRV_EP_DIR_OUT);
-
     /* Set BULK OUT Endpoint for reception. CDC-DATA is using single full duplex EP (2 pipes) */
     /* on a TTY, we read a char */
-    usb_backend_drv_set_recv_fifo(usbcdc_ctx.cdc_ifaces[cdc_handler+1].buf, 1,usbcdc_ctx.cdc_ifaces[cdc_handler+1].iface.eps[0].ep_num);
+    uint16_t buf_idx = usbcdc_ctx.cdc_ifaces[cdc_handler+1].buf_idx;
+    uint16_t to_recv;
+    if (usbcdc_ctx.cdc_ifaces[cdc_handler+1].stty_mode == true) {
+        to_recv = 1; /* receiving char-by-char */
+    } else {
+        to_recv = usbcdc_ctx.cdc_ifaces[cdc_handler+1].buf_len;
+    }
+    usb_backend_drv_set_recv_fifo(&usbcdc_ctx.cdc_ifaces[cdc_handler+1].buf[buf_idx], to_recv, usbcdc_ctx.cdc_ifaces[cdc_handler+1].iface.eps[0].ep_num);
     usb_backend_drv_activate_endpoint(usbcdc_ctx.cdc_ifaces[cdc_handler+1].iface.eps[0].ep_num, USB_BACKEND_DRV_EP_DIR_OUT);
-    //bsb_backend_drv_activate_endpoint(usbcdc_ctx.cdc_ifaces[cdc_handler+1].iface.eps[0].ep_num, USB_BACKEND_DRV_EP_DIR_IN);
-
-//    printf("activate endpoint %d\n", usbcdc_ctx.cdc_ifaces[1].iface.eps[0].ep_num);
 }
 
 
@@ -90,7 +89,7 @@ static inline uint8_t get_in_epid(usbctrl_interface_t const * const iface)
       */
     for (i = 0; i < iface_ep_num; ++i) {
         if (iface->eps[i].dir == USB_EP_DIR_IN || iface->eps[i].dir == USB_EP_DIR_BOTH) {
-            log_printf("[USBCDC] IN EP is %d\n", iface->eps[i].ep_num);
+            //log_printf("[USBCDC] IN EP is %d\n", iface->eps[i].ep_num);
             epin = iface->eps[i].ep_num;
             goto err;
         }
@@ -162,11 +161,11 @@ mbed_error_t usbcdc_data_ep_handler(uint32_t dev_id __attribute__((unused)), uin
 
     switch (dir) {
         case USB_EP_DIR_IN:
-            log_printf("[USBCDC] triggered on IN event\n");
+            //log_printf("[USBCDC] triggered on IN event\n");
             errcode = usbcdc_data_sent(dev_id, size, ep_id);
             break;
         case USB_EP_DIR_OUT:
-            log_printf("[USBCDC] triggered on OUT event\n");
+            //log_printf("[USBCDC] triggered on OUT event\n");
             errcode = usbcdc_received(dev_id, size, ep_id);
             break;
         default:
@@ -386,6 +385,7 @@ static mbed_error_t usbcdc_declare_data(uint32_t          usbxdci_handler,
     usbcdc_ctx.cdc_ifaces[i].id   = usbcdc_ctx.cdc_ifaces[i].iface.id;
     usbcdc_ctx.cdc_ifaces[i].buf = in_buff;
     usbcdc_ctx.cdc_ifaces[i].buf_len = in_buff_len;
+    usbcdc_ctx.cdc_ifaces[i].buf_idx = 0;
 
     /* the configuration step not yet passed */
     usbcdc_ctx.cdc_ifaces[i].configured = false;
@@ -419,6 +419,7 @@ err:
 
 
 mbed_error_t usbcdc_configure(uint8_t                   cdc_handler,
+                              bool                      stty_mode,
                               usb_cdc_receive_t         cdc_receive_data_frame,
                               usb_cdc_receive_t         cdc_receive_ctrl_frame)
 {
@@ -439,6 +440,7 @@ mbed_error_t usbcdc_configure(uint8_t                   cdc_handler,
     /* set interface as configured */
     ctx->cdc_ifaces[cdc_handler].receive = cdc_receive_ctrl_frame;
     ctx->cdc_ifaces[cdc_handler+1].receive = cdc_receive_data_frame;
+    ctx->cdc_ifaces[cdc_handler+1].stty_mode = stty_mode;
     ctx->cdc_ifaces[cdc_handler].configured = true;
 
 err:
@@ -458,15 +460,15 @@ mbed_error_t usbcdc_ctrl_send(uint32_t dev_id __attribute__((unused)), uint32_t 
 }
 
 mbed_error_t usbcdc_send_data(uint8_t              cdc_handler,
-                              uint8_t*             response,
-                              uint8_t              response_len)
+                              uint8_t*             data,
+                              uint8_t              data_len)
 {
     mbed_error_t errcode = MBED_ERROR_NONE;
-    if (response == NULL) {
+    if (data == NULL) {
         errcode = MBED_ERROR_INVPARAM;
         goto err;
     }
-    if (response_len == 0) {
+    if (data_len == 0) {
         errcode = MBED_ERROR_INVPARAM;
         goto err;
     }
@@ -475,7 +477,7 @@ mbed_error_t usbcdc_send_data(uint8_t              cdc_handler,
         goto err;
     }
 
-#if 0
+#if 1
     while (data_being_sent == true) {
         request_data_membarrier();
     }
@@ -484,14 +486,14 @@ mbed_error_t usbcdc_send_data(uint8_t              cdc_handler,
     set_bool_with_membarrier(&data_being_sent, true);
     /* total size is report + report id (one byte) */
     uint8_t epid = get_in_epid(&usbcdc_ctx.cdc_ifaces[cdc_handler+1].iface);
-    log_printf("[USBCDC] sending response on EP %d (len %d)\n", epid, response_len);
+    //log_printf("[USBCDC] sending data on EP %d (len %d)\n", epid, data_len);
 
-    errcode = usb_backend_drv_send_data(response, response_len, epid);
+    errcode = usb_backend_drv_send_data(data, data_len, epid);
     if (errcode != MBED_ERROR_NONE) {
         goto err_send;
     }
     /* wait for end of transmission */
-#if 0
+#if 1
     while (data_being_sent == true) {
         request_data_membarrier();
     }
@@ -501,14 +503,6 @@ err_send:
 err:
     return errcode;
 }
-
-#if 0
-/* FIXME extern volatile */
-extern volatile bool rqst_data_received;
-extern volatile bool rqst_data_sent;
-extern volatile bool rqst_data_being_send;
-extern volatile bool connected;
-#endif
 
 mbed_error_t usbcdc_exec(uint8_t cdc_handler)
 {
@@ -525,19 +519,23 @@ mbed_error_t usbcdc_exec(uint8_t cdc_handler)
         rqst_data_sent = false;
     }
 #endif
-    /* inform host that we are ready to recv */
-    //usbcdc_send_data(cdc_handler, (uint8_t*)"W", 1);
     /* and wait for command */
     if (data_received == true && received_size > 0) {
-        /* hardcoded: should be passed to upper layer */
-        usbcdc_ctx.cdc_ifaces[cdc_handler+1].buf[received_size] = '\0';
+        /* update buffer index */
+        usbcdc_ctx.cdc_ifaces[cdc_handler+1].buf_idx += received_size;
+
+        uint16_t idx = usbcdc_ctx.cdc_ifaces[cdc_handler+1].buf_idx;
+        uint8_t *buf = &usbcdc_ctx.cdc_ifaces[cdc_handler+1].buf[0];
+        usbcdc_ctx.cdc_ifaces[cdc_handler+1].receive(cdc_handler, buf, idx);
+        usbcdc_ctx.cdc_ifaces[cdc_handler+1].buf_idx = 0;
         /* acknowledge reception */
         set_bool_with_membarrier(&data_received, false);
-        char received = usbcdc_ctx.cdc_ifaces[cdc_handler+1].buf[0];
+#if 0
         usbcdc_send_data(cdc_handler, (uint8_t*)&received, 1);
         if (received == '\r') {
             usbcdc_send_data(cdc_handler, (uint8_t*)"\nCANif> ", 8);
         }
+#endif
         set_u32_with_membarrier(&received_size, 0);
     }
     request_data_membarrier();

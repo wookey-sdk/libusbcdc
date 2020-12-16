@@ -60,6 +60,8 @@ typedef struct {
     usbctrl_interface_t   iface;
     uint8_t              *buf;
     uint16_t              buf_len;
+    uint16_t              buf_idx;
+    uint8_t               stty_mode;
     bool                  configured;
     bool                  declared;
     uint8_t id;

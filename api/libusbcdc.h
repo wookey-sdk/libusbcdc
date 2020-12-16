@@ -67,6 +67,7 @@
  * for security reason.
  */
 
+
 typedef mbed_error_t (*usb_cdc_receive_t)(uint8_t cdc_handler, uint8_t *frame, uint16_t len);
 
 /*
@@ -94,6 +95,7 @@ mbed_error_t usbcdc_declare(uint32_t          usbxdci_handler,
 
 
 mbed_error_t usbcdc_configure(uint8_t                     cdc_handler,
+                              bool                        stty_mode,
                               usb_cdc_receive_t           cdc_receive_data_frame,
                               usb_cdc_receive_t           cdc_receive_ctrl_frame);
 
