@@ -174,7 +174,6 @@ mbed_error_t usbcdc_data_rqst_recv(uint32_t dev_id __attribute__((unused)),
     mbed_error_t errcode = MBED_ERROR_NONE;
     usbcdc_context_t *ctx = usbcdc_get_context();
     log_printf("handling data content received for cmd 0x%x:\n", curr_cmd);
-    hexdump(&ctx->rqstbuf[0], size);
     set_bool_with_membarrier((bool*)&rqst_data_received, true);
     /* FIXME: index not handled */
     errcode = usbcdc_request_handler(curr_cmd, &ctx->rqstbuf[0], size, 0);

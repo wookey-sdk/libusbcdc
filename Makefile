@@ -23,7 +23,7 @@ APP_BUILD_DIR = $(BUILD_DIR)/libs/$(LIB_NAME)
 ###################################################################
 
 CFLAGS += $(LIBS_CFLAGS)
-CFLAGS += -MMD -MP -O3 -ggdb
+CFLAGS += -MMD -MP -O3
 
 #############################################################
 # About library sources

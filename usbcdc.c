@@ -55,14 +55,13 @@ void usbcdc_recv_on_endpoints(uint8_t cdc_handler)
 {
     /* Set BULK OUT Endpoint for reception. CDC-DATA is using single full duplex EP (2 pipes) */
     /* on a TTY, we read a char */
-    uint16_t buf_idx = usbcdc_ctx.cdc_ifaces[cdc_handler+1].buf_idx;
     uint16_t to_recv;
     if (usbcdc_ctx.cdc_ifaces[cdc_handler+1].stty_mode == true) {
         to_recv = 1; /* receiving char-by-char */
     } else {
         to_recv = usbcdc_ctx.cdc_ifaces[cdc_handler+1].buf_len;
     }
-    usb_backend_drv_set_recv_fifo(&usbcdc_ctx.cdc_ifaces[cdc_handler+1].buf[buf_idx], to_recv, usbcdc_ctx.cdc_ifaces[cdc_handler+1].iface.eps[0].ep_num);
+    usb_backend_drv_set_recv_fifo(&usbcdc_ctx.cdc_ifaces[cdc_handler+1].buf[0], to_recv, usbcdc_ctx.cdc_ifaces[cdc_handler+1].iface.eps[0].ep_num);
     usb_backend_drv_activate_endpoint(usbcdc_ctx.cdc_ifaces[cdc_handler+1].iface.eps[0].ep_num, USB_BACKEND_DRV_EP_DIR_OUT);
 }
 
@@ -99,38 +98,15 @@ err:
 }
 
 
-static inline mbed_error_t usbcdc_received(uint32_t dev_id __attribute__((unused)), uint32_t size, uint8_t ep_id)
+static inline mbed_error_t usbcdc_received(uint32_t dev_id __attribute__((unused)), uint32_t size, uint8_t ep_id __attribute__((unused)))
 {
     mbed_error_t errcode = MBED_ERROR_NONE;
-    uint8_t iface = 0;
     log_printf("[USBCDC] uint8_t ID packet (%d B) received on ep %d\n", size, ep_id);
 
+    set_bool_with_membarrier(&data_received, true);
+    set_u32_with_membarrier(&received_size, size);
 
-    for (iface = 0; iface < usbcdc_ctx.num_iface; ++iface)
-    {
-        if (usbcdc_ctx.cdc_ifaces[iface].iface.usb_ep_number >= MAX_EP_PER_INTERFACE) {
-            errcode = MBED_ERROR_INVPARAM;
-            goto err;
-        }
-
-        uint8_t ep = 0;
-        const uint8_t max_ep_number = usbcdc_ctx.cdc_ifaces[iface].iface.usb_ep_number;
-
-        for (ep = 0; ep < max_ep_number; ++ep)
-        {
-            if (usbcdc_ctx.cdc_ifaces[iface].iface.eps[ep].ep_num == ep_id)
-            {
-                //log_printf("[USBCDC] executing trigger for EP %d\n", ep_id);
-                //usbcdc_ctx.cdc_ifaces[iface].buf[size] = '\0';
-                //log_printf("[USBCDC] received: %s\n", usbcdc_ctx.cdc_ifaces[iface].buf);
-                /* FIXME: upper layer trigger */
-                set_bool_with_membarrier(&data_received, true);
-                set_u32_with_membarrier(&received_size, size);
-                goto err;
-            }
-        }
-    }
-err:
+//err:
     return errcode;
 }
 
@@ -506,39 +482,23 @@ err:
 
 mbed_error_t usbcdc_exec(uint8_t cdc_handler)
 {
-    usbcdc_recv_on_endpoints(cdc_handler);
-    /* is there async requests to handle ? */
-#if 0
-    if (rqst_data_received && !rqst_data_being_send) {
-        log_printf("ack on EP0\n");
-        rqst_data_received = false;
-        usb_backend_drv_send_zlp(EP0);
+    while (data_received == false) {
+        request_data_membarrier();
     }
-    if (rqst_data_sent) {
-        rqst_data_being_send = false;
-        rqst_data_sent = false;
-    }
-#endif
-    /* and wait for command */
-    if (data_received == true && received_size > 0) {
-        /* update buffer index */
-        usbcdc_ctx.cdc_ifaces[cdc_handler+1].buf_idx += received_size;
-
-        uint16_t idx = usbcdc_ctx.cdc_ifaces[cdc_handler+1].buf_idx;
-        uint8_t *buf = &usbcdc_ctx.cdc_ifaces[cdc_handler+1].buf[0];
-        usbcdc_ctx.cdc_ifaces[cdc_handler+1].receive(cdc_handler, buf, idx);
-        usbcdc_ctx.cdc_ifaces[cdc_handler+1].buf_idx = 0;
-        /* acknowledge reception */
-        set_bool_with_membarrier(&data_received, false);
-#if 0
-        usbcdc_send_data(cdc_handler, (uint8_t*)&received, 1);
-        if (received == '\r') {
-            usbcdc_send_data(cdc_handler, (uint8_t*)"\nCANif> ", 8);
-        }
-#endif
-        set_u32_with_membarrier(&received_size, 0);
-    }
+    /* no data currently being received, set EP ready to receive more data */
+    /* data has been received. proceed first... */
+    /* update buffer index */
+    usbcdc_ctx.cdc_ifaces[cdc_handler+1].buf_idx += received_size;
+    uint16_t idx = usbcdc_ctx.cdc_ifaces[cdc_handler+1].buf_idx;
+    uint8_t *buf = &usbcdc_ctx.cdc_ifaces[cdc_handler+1].buf[0];
+    //printf("pushing frame\n");
+    usbcdc_ctx.cdc_ifaces[cdc_handler+1].receive(cdc_handler, buf, idx);
+    usbcdc_ctx.cdc_ifaces[cdc_handler+1].buf_idx = 0;
+    /* acknowledge reception */
+    set_bool_with_membarrier(&data_received, false);
+    set_u32_with_membarrier(&received_size, 0);
     request_data_membarrier();
+    usbcdc_recv_on_endpoints(cdc_handler);
 
     return MBED_ERROR_NONE;
 }
