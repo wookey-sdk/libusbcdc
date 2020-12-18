@@ -34,24 +34,43 @@
 #include "usbcdc_descriptor.h"
 
 
-static bool data_being_sent = false;
-static bool data_received = false;
-static uint32_t received_size = 0;
-
 static usbcdc_context_t usbcdc_ctx = { 0 };
 
-
-
-uint8_t ctrlbuf[8];
-uint16_t ctrlbuf_len = 8;
-
-void usbcdc_prepare_rcv(uint8_t cdc_handler) {
-    printf("set fifo for EP %d (in & out)\n", usbcdc_ctx.cdc_ifaces[cdc_handler+1].iface.eps[0].ep_num);
-    /* on a TTY, we read a char */
-    usb_backend_drv_set_recv_fifo(usbcdc_ctx.cdc_ifaces[cdc_handler+1].buf, 1,usbcdc_ctx.cdc_ifaces[cdc_handler+1].iface.eps[0].ep_num);
+bool usbcdc_interface_exists(uint8_t cdc_handler)
+{
+    usbcdc_context_t *ctx = usbcdc_get_context();
+    bool result = false;
+    if (cdc_handler < ctx->num_iface && cdc_handler < 2*MAX_USBCDC_FUNCTIONS) {
+        /* INFO: boolean normalization based on false (lonely checked value.
+         * Thus, this is not fault-resilient as any non-zero value generates a
+         * TRUE result */
+        result = !(ctx->cdc_ifaces[cdc_handler].declared == false);
+    }
+    return result;
 }
 
-void usbcdc_recv_on_endpoints(uint8_t cdc_handler)
+
+void usbcdc_initialize(uint8_t cdc_handler) {
+    uint16_t to_recv;
+    usbcdc_iface_t *iface;
+
+    if (!usbcdc_interface_exists(cdc_handler)) {
+        return;
+    }
+    iface = &usbcdc_ctx.cdc_ifaces[cdc_handler+1];
+
+    log_printf("set fifo for EP %d (in & out)\n", iface->iface.eps[0].ep_num);
+
+    if (iface->stty_mode == true) {
+        to_recv = 1; /* receiving char-by-char */
+    } else {
+        to_recv = iface->buf_len;
+    }
+    /* on a TTY, we read a char */
+    usb_backend_drv_set_recv_fifo(iface->buf, to_recv, iface->iface.eps[0].ep_num);
+}
+
+void usbcdc_recv_data(uint8_t cdc_handler)
 {
     /* Set BULK OUT Endpoint for reception. CDC-DATA is using single full duplex EP (2 pipes) */
     /* on a TTY, we read a char */
@@ -98,26 +117,70 @@ err:
 }
 
 
-static inline mbed_error_t usbcdc_received(uint32_t dev_id __attribute__((unused)), uint32_t size, uint8_t ep_id __attribute__((unused)))
+/*
+ * Data recv trigger on OUT CDC Data endpoint
+ */
+static inline mbed_error_t usbcdc_data_received(uint32_t dev_id __attribute__((unused)), uint32_t size, uint8_t ep_id)
 {
     mbed_error_t errcode = MBED_ERROR_NONE;
+    usbcdc_context_t *ctx = usbcdc_get_context();
+    usbcdc_iface_t *cdc_iface;
     log_printf("[USBCDC] uint8_t ID packet (%d B) received on ep %d\n", size, ep_id);
 
-    set_bool_with_membarrier(&data_received, true);
-    set_u32_with_membarrier(&received_size, size);
+    for (uint8_t iface = 0; iface < ctx->num_iface; ++iface) {
+        if (ctx->cdc_ifaces[iface].iface.usb_class == USB_CLASS_CDC_CTRL) {
+            /* we are the data handler */
+            continue;
+        }
+        cdc_iface = &ctx->cdc_ifaces[iface];
+        for (uint8_t ep = 0; ep < cdc_iface->iface.usb_ep_number; ++ep) {
+            if (cdc_iface->iface.eps[ep].ep_num == ep_id) {
 
-//err:
+                set_bool_with_membarrier(&cdc_iface->data_received, true);
+                set_u16_with_membarrier(&cdc_iface->buf_idx, size);
+                //log_printf("[USBCDC] IN EP is %d\n", iface->eps[i].ep_num);
+                goto err;
+            }
+        }
+    }
+
+err:
     return errcode;
 }
 
+/*
+ * Data sent trigger on IN CDC Data endpoint
+ */
 static inline
-mbed_error_t usbcdc_data_sent(uint32_t dev_id __attribute__((unused)), uint32_t size __attribute__((unused)), uint8_t ep_id __attribute((unused)))
+mbed_error_t usbcdc_data_sent(uint32_t dev_id __attribute__((unused)), uint32_t size __attribute__((unused)), uint8_t ep_id)
 {
+    usbcdc_context_t *ctx = usbcdc_get_context();
+    usbcdc_iface_t *cdc_iface;
+
     //log_printf("[USBCDC] data (%d B) sent on EP %d\n", size, ep_id);
-    set_bool_with_membarrier(&data_being_sent, false);
+    for (uint8_t iface = 0; iface < ctx->num_iface; ++iface) {
+        if (ctx->cdc_ifaces[iface].iface.usb_class == USB_CLASS_CDC_CTRL) {
+            /* we are the data handler */
+            continue;
+        }
+        cdc_iface = &ctx->cdc_ifaces[iface];
+        for (uint8_t ep = 0; ep < cdc_iface->iface.usb_ep_number; ++ep) {
+            if (cdc_iface->iface.eps[ep].ep_num == ep_id) {
+                set_bool_with_membarrier(&cdc_iface->data_being_sent, false);
+                //log_printf("[USBCDC] IN EP is %d\n", iface->eps[i].ep_num);
+                goto err;
+            }
+        }
+    }
+
+err:
     return MBED_ERROR_NONE;
 }
 
+/*************************************************************
+ * Effective handler for CDC_DATA endpoints, as the CDC_DATA (bulk)
+ * endpoint is bidirectional.
+ */
 static
 mbed_error_t usbcdc_data_ep_handler(uint32_t dev_id __attribute__((unused)), uint32_t size, uint8_t ep_id)
 {
@@ -142,7 +205,7 @@ mbed_error_t usbcdc_data_ep_handler(uint32_t dev_id __attribute__((unused)), uin
             break;
         case USB_EP_DIR_OUT:
             //log_printf("[USBCDC] triggered on OUT event\n");
-            errcode = usbcdc_received(dev_id, size, ep_id);
+            errcode = usbcdc_data_received(dev_id, size, ep_id);
             break;
         default:
             /* should never happend (dead block) */
@@ -160,24 +223,13 @@ usbcdc_context_t *usbcdc_get_context(void)
     return (usbcdc_context_t*)&usbcdc_ctx;
 }
 
-bool usbcdc_interface_exists(uint8_t cdc_handler)
-{
-    usbcdc_context_t *ctx = usbcdc_get_context();
-    bool result = false;
-    if (cdc_handler < ctx->num_iface && cdc_handler < 2*MAX_USBCDC_FUNCTIONS) {
-        /* INFO: boolean normalization based on false (lonely checked value.
-         * Thus, this is not fault-resilient as any non-zero value generates a
-         * TRUE result */
-        result = !(ctx->cdc_ifaces[cdc_handler].declared == false);
-    }
-    return result;
-}
 
-
+/*
+ * declaring control interface: CDC_CTRL handle both request level and data level content
+ * on EP0 and a dedicated Interrupt IN EP for informations triggering
+ */
 static mbed_error_t usbcdc_declare_ctrl(uint32_t          usbxdci_handler,
-                                        uint8_t          *cdc_handler,
-                                        uint8_t          *in_buff,
-                                        uint32_t          in_buff_len)
+                                        uint8_t          *cdc_handler)
 {
     mbed_error_t errcode = MBED_ERROR_NONE;
     /* sanitize */
@@ -191,17 +243,6 @@ static mbed_error_t usbcdc_declare_ctrl(uint32_t          usbxdci_handler,
         errcode = MBED_ERROR_NOSTORAGE;
         goto err;
     }
-    if (in_buff == NULL) {
-        log_printf("[USBCDC] error ! buffer given is null !\n");
-        errcode = MBED_ERROR_NOSTORAGE;
-        goto err;
-    }
-    if (in_buff_len == 0) {
-        log_printf("[USBCDC] error ! buffer given is null-sized !\n");
-        errcode = MBED_ERROR_NOSTORAGE;
-        goto err;
-    }
-
 
     uint8_t i = usbcdc_ctx.num_iface;
     memset((void*)&usbcdc_ctx.cdc_ifaces[i], 0x0, sizeof(usbctrl_interface_t));
@@ -225,8 +266,9 @@ static mbed_error_t usbcdc_declare_ctrl(uint32_t          usbxdci_handler,
     usbcdc_ctx.cdc_ifaces[i].iface.composite_function = true;
     usbcdc_ctx.cdc_ifaces[i].iface.composite_function_id = 1;
 
-    usbcdc_ctx.cdc_ifaces[i].buf = ctrlbuf;
-    usbcdc_ctx.cdc_ifaces[i].buf_len = ctrlbuf_len;
+    /* CDC_CTRL is IN Interrupt EP, buffer are set durring usbcdc_send_ctrl() */
+    usbcdc_ctx.cdc_ifaces[i].buf = NULL;
+    usbcdc_ctx.cdc_ifaces[i].buf_len = 0;
 
     uint8_t curr_ep = 0;
 
@@ -275,8 +317,8 @@ static mbed_error_t usbcdc_declare_ctrl(uint32_t          usbxdci_handler,
 
     /* set current interface effective identifier */
     usbcdc_ctx.cdc_ifaces[i].id  = usbcdc_ctx.cdc_ifaces[i].iface.id;
-    usbcdc_ctx.cdc_ifaces[i].buf = in_buff;
-    usbcdc_ctx.cdc_ifaces[i].buf_len = in_buff_len;
+    usbcdc_ctx.cdc_ifaces[i].buf = NULL;
+    usbcdc_ctx.cdc_ifaces[i].buf_len = 0;
 
     /* the configuration step not yet passed */
     usbcdc_ctx.cdc_ifaces[i].configured = false;
@@ -291,7 +333,9 @@ err:
 }
 
 
-
+/*
+ * Declare CDC_DATA Endpoint (Bi-drectional Bulk interface).
+ */
 static mbed_error_t usbcdc_declare_data(uint32_t          usbxdci_handler,
                                         uint16_t          ep_mpsize,
                                         uint8_t          *in_buff,
@@ -320,7 +364,7 @@ static mbed_error_t usbcdc_declare_data(uint32_t          usbxdci_handler,
     memset((void*)&usbcdc_ctx.cdc_ifaces[i], 0x0, sizeof(usbctrl_interface_t));
 
     ADD_LOC_HANDLER(usbcdc_class_rqst_handler);
-    ADD_LOC_HANDLER(usbcdc_received);
+    ADD_LOC_HANDLER(usbcdc_data_received);
     ADD_LOC_HANDLER(usbcdc_data_sent);
     ADD_LOC_HANDLER(usbcdc_data_ep_handler);
 
@@ -374,30 +418,35 @@ err:
     return errcode;
 }
 
+/*
+ * Declare the overall USB-CDC composite interface against the libusbcdc
+ */
 mbed_error_t usbcdc_declare(uint32_t          usbxdci_handler,
                             uint16_t          data_mpsize,
                             uint8_t          *cdc_handler,
                             uint8_t          *data_buf,
-                            uint32_t          data_buf_len,
-                            uint8_t          *ctrl_buf,
-                            uint16_t          ctrl_buf_len)
+                            uint32_t          data_buf_len)
 {
     mbed_error_t errcode = MBED_ERROR_NONE;
 
-    if ((errcode = usbcdc_declare_ctrl(usbxdci_handler, cdc_handler, data_buf, data_buf_len)) != MBED_ERROR_NONE) {
+    if ((errcode = usbcdc_declare_ctrl(usbxdci_handler, cdc_handler)) != MBED_ERROR_NONE) {
         goto err;
     }
     /* FIXME data mpsize */
-    errcode = usbcdc_declare_data(usbxdci_handler, data_mpsize, ctrl_buf, ctrl_buf_len);
+    errcode = usbcdc_declare_data(usbxdci_handler, data_mpsize, data_buf, data_buf_len);
 err:
     return errcode;
 }
 
 
+/*
+ * Configure the USB_CDC internals (CDC subclass and usage, upper trigger)
+ */
 mbed_error_t usbcdc_configure(uint8_t                   cdc_handler,
                               bool                      stty_mode,
                               usb_cdc_receive_t         cdc_receive_data_frame,
-                              usb_cdc_receive_t         cdc_receive_ctrl_frame)
+                              usb_cdc_sent_t            cdc_data_sent,
+                              usb_cdc_sent_t            cdc_ctrl_sent)
 {
     mbed_error_t errcode = MBED_ERROR_NONE;
     usbcdc_context_t *ctx = usbcdc_get_context();
@@ -406,7 +455,7 @@ mbed_error_t usbcdc_configure(uint8_t                   cdc_handler,
         errcode = MBED_ERROR_INVPARAM;
         goto err;
     }
-    if (cdc_receive_data_frame == NULL || cdc_receive_ctrl_frame == NULL) {
+    if (cdc_receive_data_frame == NULL) {
         errcode = MBED_ERROR_INVPARAM;
         goto err;
     }
@@ -414,32 +463,52 @@ mbed_error_t usbcdc_configure(uint8_t                   cdc_handler,
     /* set each of the interface callbacks */
     //ctx->cdc_ifaces[cdc_handler].receive_frame_cb = cdc_receive_frame;
     /* set interface as configured */
-    ctx->cdc_ifaces[cdc_handler].receive = cdc_receive_ctrl_frame;
+    ctx->cdc_ifaces[cdc_handler].receive = NULL;
+    ctx->cdc_ifaces[cdc_handler].sent = cdc_ctrl_sent;
+    ctx->cdc_ifaces[cdc_handler].data_received = false;
+    ctx->cdc_ifaces[cdc_handler].data_sent = false;
+    ctx->cdc_ifaces[cdc_handler].data_being_sent = false;
+
     ctx->cdc_ifaces[cdc_handler+1].receive = cdc_receive_data_frame;
+    ctx->cdc_ifaces[cdc_handler+1].sent    = cdc_data_sent;
+    ctx->cdc_ifaces[cdc_handler+1].data_received = false;
+    ctx->cdc_ifaces[cdc_handler+1].data_sent = false;
+    ctx->cdc_ifaces[cdc_handler+1].data_being_sent = false;
+
     ctx->cdc_ifaces[cdc_handler+1].stty_mode = stty_mode;
+
+
     ctx->cdc_ifaces[cdc_handler].configured = true;
 
 err:
     return errcode;
 }
 
+/*
+ * Send control information to the host through the Interrupt IN iface
+ */
 mbed_error_t usbcdc_ctrl_send(uint32_t dev_id __attribute__((unused)), uint32_t size, uint8_t ep_id)
 {
     size = size;
     ep_id = ep_id;
     /* trigger upper layer */
-    usbcdc_context_t *ctx = usbcdc_get_context();
-    /* FIXME hardcoded */
-    ctx->cdc_ifaces[0].receive(0, &ctx->cdc_ifaces[0].buf[0], size);
+    //usbcdc_context_t *ctx = usbcdc_get_context();
+    /* FIXME TODO */
     /* frame received on control plane */
     return MBED_ERROR_NONE;
 }
 
+/*
+ * Send data to the host through the CDC_DATA interface
+ */
 mbed_error_t usbcdc_send_data(uint8_t              cdc_handler,
                               uint8_t*             data,
                               uint8_t              data_len)
 {
     mbed_error_t errcode = MBED_ERROR_NONE;
+    usbcdc_context_t *ctx = usbcdc_get_context();
+    usbcdc_iface_t *cdc_iface = &ctx->cdc_ifaces[cdc_handler+1];
+
     if (data == NULL) {
         errcode = MBED_ERROR_INVPARAM;
         goto err;
@@ -453,13 +522,13 @@ mbed_error_t usbcdc_send_data(uint8_t              cdc_handler,
         goto err;
     }
 
-#if 1
-    while (data_being_sent == true) {
+    /* FIXME data_being_sent should be handled at cdc_handler (i.e. EP) level, as we
+     * may handle multiple CDC/Data ifaces */
+    while (cdc_iface->data_being_sent == true) {
         request_data_membarrier();
     }
-#endif
 
-    set_bool_with_membarrier(&data_being_sent, true);
+    set_bool_with_membarrier(&cdc_iface->data_being_sent, true);
     /* total size is report + report id (one byte) */
     uint8_t epid = get_in_epid(&usbcdc_ctx.cdc_ifaces[cdc_handler+1].iface);
     //log_printf("[USBCDC] sending data on EP %d (len %d)\n", epid, data_len);
@@ -469,36 +538,54 @@ mbed_error_t usbcdc_send_data(uint8_t              cdc_handler,
         goto err_send;
     }
     /* wait for end of transmission */
-#if 1
-    while (data_being_sent == true) {
+    while (cdc_iface->data_being_sent == true) {
         request_data_membarrier();
     }
-#endif
 err_send:
-    set_bool_with_membarrier(&data_being_sent, false);
+    set_bool_with_membarrier(&cdc_iface->data_being_sent, false);
 err:
     return errcode;
 }
 
+
+/*
+ * One loop composite interface handling (executing requested triggers, handling flags and so on).
+ */
 mbed_error_t usbcdc_exec(uint8_t cdc_handler)
 {
-    while (data_received == false) {
+    usbcdc_iface_t *data_iface = &usbcdc_ctx.cdc_ifaces[cdc_handler+1];
+    usbcdc_iface_t *ctrl_iface = &usbcdc_ctx.cdc_ifaces[cdc_handler];
+
+    while (data_iface->data_received == false &&
+           data_iface->data_sent == false &&
+           ctrl_iface->data_sent == false) {
+        /* no event... */
         request_data_membarrier();
     }
-    /* no data currently being received, set EP ready to receive more data */
-    /* data has been received. proceed first... */
-    /* update buffer index */
-    usbcdc_ctx.cdc_ifaces[cdc_handler+1].buf_idx += received_size;
-    uint16_t idx = usbcdc_ctx.cdc_ifaces[cdc_handler+1].buf_idx;
-    uint8_t *buf = &usbcdc_ctx.cdc_ifaces[cdc_handler+1].buf[0];
-    //printf("pushing frame\n");
-    usbcdc_ctx.cdc_ifaces[cdc_handler+1].receive(cdc_handler, buf, idx);
-    usbcdc_ctx.cdc_ifaces[cdc_handler+1].buf_idx = 0;
-    /* acknowledge reception */
-    set_bool_with_membarrier(&data_received, false);
-    set_u32_with_membarrier(&received_size, 0);
-    request_data_membarrier();
-    usbcdc_recv_on_endpoints(cdc_handler);
+    /* at least one event has risen... */
+    if (data_iface->data_received == true) {
+        /* data has been received. proceed first... */
+        /* update buffer index */
+        uint16_t idx = data_iface->buf_idx;
+        uint8_t *buf = &data_iface->buf[0];
+        //printf("pushing frame\n");
+        data_iface->receive(cdc_handler, buf, idx);
+        set_u16_with_membarrier(&data_iface->buf_idx, 0);
+        set_bool_with_membarrier(&data_iface->data_received, false);
+        request_data_membarrier();
+        /* acknowledge reception */
+        usbcdc_recv_data(cdc_handler);
+    }
+    if (data_iface->data_sent == true) {
+        /* previously sent data has been fully transmitted */
+        data_iface->sent(cdc_handler);
+        set_bool_with_membarrier(&data_iface->data_sent, false);
+    }
+    if (ctrl_iface->data_sent == true) {
+        /* previously sent control has ben fully transmitted */
+        ctrl_iface->sent(cdc_handler);
+        set_bool_with_membarrier(&ctrl_iface->data_sent, false);
+    }
 
     return MBED_ERROR_NONE;
 }

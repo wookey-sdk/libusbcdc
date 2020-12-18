@@ -69,6 +69,7 @@
 
 
 typedef mbed_error_t (*usb_cdc_receive_t)(uint8_t cdc_handler, uint8_t *frame, uint16_t len);
+typedef mbed_error_t (*usb_cdc_sent_t)(uint8_t cdc_handler);
 
 /*
  * INFO:
@@ -80,34 +81,63 @@ typedef mbed_error_t (*usb_cdc_receive_t)(uint8_t cdc_handler, uint8_t *frame, u
  * As a consequence, the Get_Idle() event is not pushed to upper stacks.
  */
 
-/*************************************************
+/**********************************************************************************
  * USB CDC stack API
  */
 
 
-mbed_error_t usbcdc_declare(uint32_t          usbxdci_handler,
-                            uint16_t          data_mpsize,
-                            uint8_t          *cdc_handler,
-                            uint8_t          *data_buf,
-                            uint32_t          data_buf_len,
-                            uint8_t          *ctrl_buf,
-                            uint16_t          ctrl_buf_len);
+/*
+ * Declaring the CDC interface against the USBCtrl plane.
+ * The USBCtrl plane must have been configured previously (usbxdci_handler must be valid)
+ */
+mbed_error_t usbcdc_declare(__in  uint32_t          usbxdci_handler,
+                            __in  uint16_t          data_mpsize,
+                            __out uint8_t          *cdc_handler,
+                            __in  uint8_t          *data_buf,
+                            __in  uint32_t          data_buf_len);
 
 
 mbed_error_t usbcdc_configure(uint8_t                     cdc_handler,
                               bool                        stty_mode,
                               usb_cdc_receive_t           cdc_receive_data_frame,
-                              usb_cdc_receive_t           cdc_receive_ctrl_frame);
+                              usb_cdc_sent_t              cdc_data_sent,
+                              usb_cdc_sent_t              cdc_ctrl_sent);
 
 
-void usbcdc_prepare_rcv(uint8_t cdc_handler);
+/*
+ * Initialize communication layer. To be executed **after** USB Control start and
+ * SetConfiguration received but before the usbcdc_exec() loop.
+ */
+void usbcdc_initialize(uint8_t cdc_handler);
 
-void usbcdc_recv_on_endpoints(uint8_t cdc_handler);
+/*
+ * Handle a signe CDC_DATA+CDC_CTRL handling loop associated with the given cdc_handler.
+ * When using multiple interfaces (multiple cdc_handler), execute multiple usbcdc_exec()
+ * each with one handler in the same exec loop.
+ */
+mbed_error_t usbcdc_exec(uint8_t cdc_handler);
+
+/*
+ * Activate the OUT Data endpoint. Inform the host that we can receive data on
+ * CDC_DATA interface.
+ */
+void usbcdc_recv_data(uint8_t cdc_handler);
 
 
+/*
+ * Sending data on CDC_DATA class associated to given cdc_handler
+ */
 mbed_error_t usbcdc_send_data(uint8_t              cdc_handler,
-                              uint8_t*             response,
-                              uint8_t              response_len);
+                              uint8_t*             data,
+                              uint8_t              data_len);
+
+
+/*
+ * Sending control informations on CDC_CTRL class associated to given cdc_handler
+ */
+mbed_error_t usbcdc_send_ctrl(uint8_t              cdc_handler,
+                              uint8_t*             ctrl,
+                              uint8_t              ctrl_len);
 
 /***********************************************************
  * triggers
@@ -125,6 +155,5 @@ mbed_error_t usbcdc_send_data(uint8_t              cdc_handler,
  */
 void usbcdc_data_sent_trigger(uint8_t cdc_handler, uint8_t index);
 
-mbed_error_t usbcdc_exec(uint8_t cdc_handler);
 
 #endif/*!LIBUSBHID*/

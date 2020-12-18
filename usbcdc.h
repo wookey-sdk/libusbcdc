@@ -56,14 +56,18 @@ typedef struct {
  *   configured.
  */
 typedef struct {
-    usb_cdc_receive_t     receive;
-    usbctrl_interface_t   iface;
-    uint8_t              *buf;
-    uint16_t              buf_len;
-    uint16_t              buf_idx;
-    uint8_t               stty_mode;
-    bool                  configured;
-    bool                  declared;
+    usb_cdc_receive_t      receive;
+    usb_cdc_sent_t         sent;
+    usbctrl_interface_t    iface;
+    uint8_t               *buf;
+    uint16_t               buf_len;
+    uint16_t               buf_idx;
+    uint8_t                stty_mode;
+    bool                   configured;
+    bool                   declared;
+    bool                   data_received;
+    bool                   data_sent;
+    bool                   data_being_sent;
     uint8_t id;
 } usbcdc_iface_t;
 
