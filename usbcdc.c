@@ -32,6 +32,9 @@
 #include "usbcdc.h"
 #include "usbcdc_requests.h"
 #include "usbcdc_descriptor.h"
+#ifdef __FRAMAC__
+# include "framac/entrypoint.h"
+#endif
 
 
 static usbcdc_context_t usbcdc_ctx = { 0 };
@@ -84,8 +87,10 @@ void usbcdc_recv_data(uint8_t cdc_handler)
     usb_backend_drv_activate_endpoint(usbcdc_ctx.cdc_ifaces[cdc_handler+1].iface.eps[0].ep_num, USB_BACKEND_DRV_EP_DIR_OUT);
 }
 
-
-static inline uint8_t get_in_epid(usbctrl_interface_t const * const iface)
+#ifndef __FRAMAC__
+static inline
+#endif
+uint8_t get_in_epid(usbctrl_interface_t const * const iface)
 {
     uint8_t epin = 0;
     uint8_t iface_ep_num = 0;
@@ -120,7 +125,10 @@ err:
 /*
  * Data recv trigger on OUT CDC Data endpoint
  */
-static inline mbed_error_t usbcdc_data_received(uint32_t dev_id __attribute__((unused)), uint32_t size, uint8_t ep_id)
+#ifndef __FRAMAC__
+static inline
+#endif
+mbed_error_t usbcdc_data_received(uint32_t dev_id __attribute__((unused)), uint32_t size, uint8_t ep_id)
 {
     mbed_error_t errcode = MBED_ERROR_NONE;
     usbcdc_context_t *ctx = usbcdc_get_context();
@@ -151,7 +159,9 @@ err:
 /*
  * Data sent trigger on IN CDC Data endpoint
  */
+#ifndef __FRAMAC__
 static inline
+#endif
 mbed_error_t usbcdc_data_sent(uint32_t dev_id __attribute__((unused)), uint32_t size __attribute__((unused)), uint8_t ep_id)
 {
     usbcdc_context_t *ctx = usbcdc_get_context();
@@ -181,7 +191,9 @@ err:
  * Effective handler for CDC_DATA endpoints, as the CDC_DATA (bulk)
  * endpoint is bidirectional.
  */
+#ifndef __FRAMAC__
 static
+#endif
 mbed_error_t usbcdc_data_ep_handler(uint32_t dev_id __attribute__((unused)), uint32_t size, uint8_t ep_id)
 {
     usb_ep_dir_t dir;
@@ -228,8 +240,11 @@ usbcdc_context_t *usbcdc_get_context(void)
  * declaring control interface: CDC_CTRL handle both request level and data level content
  * on EP0 and a dedicated Interrupt IN EP for informations triggering
  */
-static mbed_error_t usbcdc_declare_ctrl(uint32_t          usbxdci_handler,
-                                        uint8_t          *cdc_handler)
+#ifndef __FRAMAC__
+static
+#endif
+mbed_error_t usbcdc_declare_ctrl(uint32_t          usbxdci_handler,
+                                 uint8_t          *cdc_handler)
 {
     mbed_error_t errcode = MBED_ERROR_NONE;
     /* sanitize */
@@ -336,10 +351,13 @@ err:
 /*
  * Declare CDC_DATA Endpoint (Bi-drectional Bulk interface).
  */
-static mbed_error_t usbcdc_declare_data(uint32_t          usbxdci_handler,
-                                        uint16_t          ep_mpsize,
-                                        uint8_t          *in_buff,
-                                        uint32_t          in_buff_len)
+#ifndef __FRAMAC__
+static
+#endif
+mbed_error_t usbcdc_declare_data(uint32_t          usbxdci_handler,
+                                 uint16_t          ep_mpsize,
+                                 uint8_t          *in_buff,
+                                 uint32_t          in_buff_len)
 {
     mbed_error_t errcode = MBED_ERROR_NONE;
     /* sanitize */
@@ -556,11 +574,14 @@ mbed_error_t usbcdc_exec(uint8_t cdc_handler)
     usbcdc_iface_t *data_iface = &usbcdc_ctx.cdc_ifaces[cdc_handler+1];
     usbcdc_iface_t *ctrl_iface = &usbcdc_ctx.cdc_ifaces[cdc_handler];
 
-    while (data_iface->data_received == false &&
+    if (data_iface->data_received == false &&
            data_iface->data_sent == false &&
            ctrl_iface->data_sent == false) {
+        /*FRAMAC: it was a while waiting, the while is also present in the caller app, which should
+         * be enough with a if() here. */
         /* no event... */
         request_data_membarrier();
+        goto end;
     }
     /* at least one event has risen... */
     if (data_iface->data_received == true) {
@@ -587,5 +608,6 @@ mbed_error_t usbcdc_exec(uint8_t cdc_handler)
         set_bool_with_membarrier(&ctrl_iface->data_sent, false);
     }
 
+end:
     return MBED_ERROR_NONE;
 }

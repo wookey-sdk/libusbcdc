@@ -84,9 +84,12 @@ volatile bool rqst_data_sent = false;
 volatile bool rqst_data_being_send = false;
 volatile bool connected = false;
 
-static mbed_error_t usbcdc_request_handler(uint8_t cmd, uint8_t* data,
-                                           uint16_t len,
-                                           uint16_t index __attribute__((unused)))
+#ifndef __FRAMAC__
+static
+#endif
+mbed_error_t usbcdc_request_handler(uint8_t cmd, uint8_t* data,
+                                    uint16_t len,
+                                    uint16_t index __attribute__((unused)))
 {
     mbed_error_t errcode = MBED_ERROR_NONE;
 
@@ -191,8 +194,10 @@ mbed_error_t usbcdc_data_rqst_sent(uint32_t dev_id __attribute__((unused)),
     return errcode;
 }
 
-
-static mbed_error_t usbcdc_handle_std_request(usbctrl_setup_pkt_t *pkt)
+#ifndef __FRAMAC__
+static
+#endif
+mbed_error_t usbcdc_handle_std_request(usbctrl_setup_pkt_t *pkt)
 {
     /* TODO: get_interface, set_interface */
     mbed_error_t errcode = MBED_ERROR_NONE;
@@ -200,7 +205,10 @@ static mbed_error_t usbcdc_handle_std_request(usbctrl_setup_pkt_t *pkt)
     return errcode;
 }
 
-static mbed_error_t usbcdc_handle_class_request(usbctrl_setup_pkt_t *pkt)
+#ifndef __FRAMAC__
+static
+#endif
+mbed_error_t usbcdc_handle_class_request(usbctrl_setup_pkt_t *pkt)
 {
     mbed_error_t errcode = MBED_ERROR_NONE;
     /* get the high byte */

@@ -5,6 +5,7 @@
 #include "libusbctrl.h"
 #include "api/libusbcdc.h"
 #include "usbcdc.h"
+#include "usbcdc_requests.h"
 #include "framac/entrypoint.h"
 
 #define USB_BUF_SIZE 16384
@@ -180,11 +181,31 @@ mbed_error_t prepare_ctrl_ctx(void)
 
 
 void test_fcn_cdc(){
+    uint8_t ep = Frama_C_interval_8(1,3);
+    uint32_t size = Frama_C_interval_32(1,64);
+
+    usbcdc_recv_data(cdc_handler);
+
     usbcdc_exec(cdc_handler);
-    usb_data_ep_handler(USB_OTG_HS_ID, 64, 2);
+    usb_data_ep_handler(USB_OTG_HS_ID, size, ep);
     usbcdc_exec(cdc_handler);
-    usb_data_ep_handler(USB_OTG_HS_ID, 64, 3);
+
+    usbcdc_recv_data(cdc_handler);
+    usb_data_ep_handler(USB_OTG_HS_ID, size, ep);
     usbcdc_exec(cdc_handler);
+
+    usbctrl_setup_pkt_t pkt;
+    pkt.bRequest = Frama_C_interval_8(0,255);
+    pkt.wLength = Frama_C_interval_16(0,100); /* enough for coverage */
+    pkt.wIndex = Frama_C_interval_16(0,5); /* not used, enough for coverage */
+    pkt.bmRequestType = Frama_C_interval_8(0,255);
+    usbcdc_class_rqst_handler(USB_OTG_HS_ID, &pkt);
+
+    usbcdc_exec(cdc_handler);
+    usbcdc_class_rqst_handler(USB_OTG_HS_ID, &pkt);
+    usbcdc_exec(cdc_handler);
+    usbcdc_send_data(cdc_handler, &in_buff[0], size);
+    usbcdc_recv_data(cdc_handler);
 }
 
 void test_fcn_cdc_errorcases(){
